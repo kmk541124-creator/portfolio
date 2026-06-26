@@ -182,6 +182,7 @@ SV_APPLY_MONTH = 28
 SV_INTERN_START = 31
 SV_INTERN_END = 33
 NARSYA_END_MONTH = 25
+COUNCIL = {3, 15, 27}
 
 prompt_data = load_friend_prompt()
 FRIEND_NAME = prompt_data.get("friend_name", "김시영")
@@ -303,10 +304,12 @@ class Game:
         self._expel = False
         self.sv_applied = False
         self.en_applied = False
+        self.council = False
         self.gamgi = False
         self.heal_count = 0
         self.en_ing = False
         self.en_notiy = 0
+        self.co_notiy = 0
         self.sv_intern = False
         self.narsya_notified = False
         self.sv_apply_notified = False
@@ -333,10 +336,12 @@ class Game:
             "gamgi_stats" : self.gamgi_stats,
             "item_list" : self.item_list,
             "heal_count": self.heal_count,
+            "council": self.council,
             "bag_list": self.bag_list,
             "gamgi": self.gamgi,
             "en_applied": self.en_applied,
             "en_notiy": self.en_notiy,
+            "co_notiy": self.co_notiy,
             "sv_applied": self.sv_applied,
             "sv_intern": self.sv_intern,
             "narsya_notified": self.narsya_notified,
@@ -369,6 +374,7 @@ class Game:
         self.sv_applied = data.get("sv_applied", False)
         self.en_ing = data.get("en_ing", False)
         self.en_applied = data.get("en_applied", False)
+        self.council = data.get("council", False)
         self.sv_intern = data.get("sv_intern", False)
         self.heal_count = data.get("heal_count", 0)
         self.gamgi = data.get("gamgi", False)
@@ -377,6 +383,7 @@ class Game:
         self.narsya_result_done = data.get("narsya_result_done", False)
         self.exam_done = set(data.get("exam_done", []))
         self.en_notiy = data.get("en_notiy", 0)
+        self.co_notiy = data.get("co_notiy", 0)
         self.item_list = data.get("item_list", [])
         self.bag_list = data.get("bag_list",[])
         self.major = data.get("major")
@@ -435,10 +442,17 @@ class Game:
         self.club = cname
         self.club_year = self.current_year()
 
+    def join_council(self, social_stat):
+        if social_stat >= 200:
+            self.notify("투표를 받아서 자치위원회에 들어갔습니다!", GREEN)
+            self.council = True
+        else:
+            self.notify("사교성이 부족해 자치위원회에 들어가지 못했습니다 ㅠ", RED)
+            self.council = False
+
     def buy_item(self, cname):
         self.bag_list.append(cname)
         SHOP_LIST[cname]['buy'] = True
-        print(self.bag_list)
 
     def use_item(self, cname):
         use = SHOP_LIST[cname]['stats']
@@ -517,10 +531,11 @@ class Game:
         elif not self.gamgi and self.stats["체력"] <= 80:
             self.notify("감기에 걸리셨습니다 운동좀 하세요", RED)
             self.gamgi = True
-
         self.clamp_stats()
         if self.en_ing:
             self.stats["영어"] += 10
+        if self.council:
+            self.stats["사교성"] += 5
         if self.stats["멘탈"] < 50:
             ratio = self.stats["멘탈"] / 100.0
             for stat in ["코딩", "수학", "영어"]:
@@ -627,6 +642,16 @@ class Game:
                 "choice": True,
             }
             self.scene = "event"
+        elif m in COUNCIL and self.current_year() > self.co_notiy:
+            self.co_notiy = self.current_year()
+            self.pending_event = {
+                "type": "council",
+                "name": "자치위원회 선거가 시작됩니다!",
+                "eff": {},
+                "desc": "자치위원회 선거에 지원해보세요.\n사교성 200 이상이면 당선됩니다.\n자치위원이 되면 매달 사교성이 5 오릅니다.",
+                "choice": True,
+            }
+            self.scene = "event"
         else:
             self.notify(f"{self.year_label()} 시작", ACCENT)
 
@@ -716,8 +741,10 @@ def draw_main():
     pygame.draw.line(screen, BORDER, (0, 52), (WIDTH, 52), 1)
     txt(screen, "개발자 메이커", F18, ACCENT, 18, 15)
     txt(screen, f"돈: {g.money}", F14, GOLD, 150, 17)
+    if g.council:
+        txt(screen, "자치위원 ★", F12, GOLD, 160, 35)
     if g.gamgi:
-        txt(screen, f"감기에 걸리셨습니다 매달 체력 {g.gamgi_stats}씩 감소합니다", F14, RED, 200, 17)
+        txt(screen, f"감기에 걸리셨습니다 매달 체력 {g.gamgi_stats}씩 감소합니다", F14, RED, 280, 17)
     txt(screen, g.year_label(), F18, WHITE, WIDTH // 2, 26, center=True)
     m_color = MAJORS.get(g.major, {}).get("색", WHITE) if g.major and g.major != "풀스택" else WHITE
     if g.major:
@@ -912,14 +939,12 @@ def draw_schedule(cy, mx, my):
         txt(screen, "실리콘밸리 인턴 활동만 가능", F12, GOLD, 100, cy + 12)
     elif g.is_narsya_period():
         txt(screen, "나르샤 활동 추가됨", F12, ORANGE, 100, cy + 12)
-
     ROW_H = 34
     visible_top = cy + 35
     visible_bot = HEIGHT - 64
     visible_h = visible_bot - visible_top
     max_scroll = max(0, len(acts) * ROW_H - visible_h)
     g.act_scroll = min(g.act_scroll, max_scroll)
-
     act_rects = []
     clip_surf = pygame.Surface((432, visible_h), pygame.SRCALPHA)
     for i, act in enumerate(acts):
@@ -950,14 +975,12 @@ def draw_schedule(cy, mx, my):
         clip_surf.blit(sc, (370, ry + 9))
         act_rects.append(r_screen)
     screen.blit(clip_surf, (14, visible_top))
-
     if max_scroll > 0:
         sb_ratio = g.act_scroll / max_scroll
         sb_h = max(30, int(visible_h * visible_h / (len(acts) * ROW_H)))
         sb_y = visible_top + int((visible_h - sb_h) * sb_ratio)
         pygame.draw.rect(screen, DARK_GRAY, (448, visible_top, 6, visible_h), border_radius=3)
         pygame.draw.rect(screen, GRAY, (448, sb_y, 6, sb_h), border_radius=3)
-
     rx = 460
     panel(screen, rx, cy, WIDTH - rx - 10, HEIGHT - cy - 62, PANEL, alpha=180, radius=10, border=BORDER)
     txt(screen, "이번 달 스케줄", F14, GRAY, rx + 10, cy + 10)
@@ -1028,6 +1051,8 @@ def draw_status(cy):
     txt(screen, f"종합 점수: {total}/3000", F14, YELLOW, WIDTH // 2, cy + 305, center=True)
     m_color = MAJORS.get(g.major, {}).get("색", WHITE) if g.major else WHITE
     txt(screen, f"현재 전공 방향: {g.major or '미정'}", F14, m_color, WIDTH // 2, cy + 330, center=True)
+    if g.council:
+        txt(screen, "자치위원 ★ (매달 사교성 +5)", F14, GOLD, WIDTH // 2, cy + 353, center=True)
     hints = []
     if g.stats["코딩"] >= 400: hints.append(("대기업 개발자 가능성", GREEN))
     if g.stats["영어"] >= 400: hints.append(("해외 취업 가능성", CYAN))
@@ -1037,9 +1062,9 @@ def draw_status(cy):
     if g.stats["체력"] < 30: hints.append(("건강 적신호", RED))
     if g.sv_intern: hints.append(("실리콘밸리 인턴 경험 보유", GOLD))
     if hints:
-        txt(screen, "경로 분석:", F14, GRAY, WIDTH // 2, cy + 358, center=True)
+        txt(screen, "경로 분석:", F14, GRAY, WIDTH // 2, cy + 378, center=True)
         for j, (h, c) in enumerate(hints[:3]):
-            txt(screen, h, F12, c, WIDTH // 2, cy + 378 + j * 20, center=True)
+            txt(screen, h, F12, c, WIDTH // 2, cy + 398 + j * 20, center=True)
 
 def draw_club(cy, mx, my):
     panel(screen, 10, cy, WIDTH - 20, HEIGHT - cy - 62, PANEL, alpha=180, radius=10, border=BORDER)
@@ -1076,13 +1101,13 @@ def draw_club(cy, mx, my):
         club_rects.append((r, cname, selected))
     return club_rects
 
-def draw_bag(cy,mx,my):
+def draw_bag(cy, mx, my):
     panel(screen, 10, cy, WIDTH - 20, HEIGHT - cy - 62, PANEL, alpha=180, radius=10, border=BORDER)
     txt(screen, "가방", F18, ACCENT, WIDTH // 2, cy + 18, center=True)
     txt(screen, "소지하고 있는 아이템 입니다", F12, GRAY, WIDTH // 2, cy + 42, center=True)
     names = g.bag_list
     bag_rect = []
-    for  i, cname in enumerate(names):
+    for i, cname in enumerate(names):
         info = SHOP_LIST[cname]
         cx2 = 30 + (i % 2) * 480
         cy2 = cy + 70 + (i // 2) * 160
@@ -1092,11 +1117,9 @@ def draw_bag(cy,mx,my):
         bdr = info["색"]
         panel(screen, cx2, cy2, w, h, bc, alpha=220, radius=12, border=bdr)
         txt(screen, cname, F18, info["색"], cx2 + 20, cy2 + 14)
-
         txt(screen, info["desc"], F12, GRAY, cx2 + 20, cy2 + 46)
         txt(screen, "사용시: ", F12, GRAY, cx2 + 20, cy2 + 72)
         ex = cx2 + 110
-
         txt(screen, f"{info['stats']} : {info['eff']}", F14, STAT_COLOR.get(info['stats'], WHITE), ex, cy2 + 70)
         ex += 90
         r = pygame.Rect(cx2 + w - 110, cy2 + h - 42, 95, 30)
@@ -1167,60 +1190,24 @@ def draw_shop(cy, mx, my):
         bdr = info["색"]
         panel(screen, cx2, cy2, w, h, bc, alpha=220, radius=12, border=bdr)
         txt(screen, cname, F18, info["색"], cx2 + 20, cy2 + 14)
-
         txt(screen, info["desc"], F12, GRAY, cx2 + 20, cy2 + 46)
         txt(screen, "획득 스탯:", F12, GRAY, cx2 + 20, cy2 + 72)
         ex = cx2 + 110
         txt(screen, f"{info['stats']} : {info['eff']}", F14, STAT_COLOR.get(info['stats'], WHITE), ex, cy2 + 70)
-        txt(screen, f"가격: {info['money']}", F14, GOLD, ex-100, cy2 + 100)
+        txt(screen, f"가격: {info['money']}", F14, GOLD, ex - 100, cy2 + 100)
         r = pygame.Rect(cx2 + w - 110, cy2 + h - 42, 95, 30)
         can = info['buy']
         btn(screen, r, "구매하기" if not can else "구매완료", F12, active=not info['buy'])
         item_list.append((r, cname, info["buy"]))
     return item_list
 
-def draw_event():
-    screen.fill(BG)
-    ev = g.pending_event
-    ev_type = ev.get("type", "random")
-    border_col = ORANGE if ev_type == "narsya_start" else GOLD if ev_type == "sv_apply" else ACCENT
-    title_col = ORANGE if ev_type == "narsya_start" else GOLD if ev_type == "sv_apply" else YELLOW
-    panel(screen, WIDTH // 2 - 300, HEIGHT // 2 - 180, 600, 360, PANEL2, alpha=235, radius=16, border=border_col)
-    txt(screen, ev["name"], F18, title_col, WIDTH // 2, HEIGHT // 2 - 148, center=True)
-    pygame.draw.line(screen, BORDER, (WIDTH // 2 - 270, HEIGHT // 2 - 122), (WIDTH // 2 + 270, HEIGHT // 2 - 122), 1)
-    desc = ev.get("desc", "")
-    if desc:
-        for i, line in enumerate(desc.split("\n")):
-            txt(screen, line, F14, WHITE, WIDTH // 2, HEIGHT // 2 - 95 + i * 26, center=True)
-    eff = ev.get("eff", {})
-    eff_y = HEIGHT // 2 - 95 + len(desc.split("\n")) * 26 + 10 if desc else HEIGHT // 2 - 60
-    for stat, val in eff.items():
-        col = GREEN if val > 0 else RED
-        txt(screen, f"{stat} {val:+}", F18, col, WIDTH // 2, eff_y, center=True)
-        eff_y += 32
-    pen = ev.get("penalty", 0)
-    if pen > 0:
-        txt(screen, f"벌점 +{pen}점  (누적 {g.penalty}/{PENALTY_EXPEL})", F14, RED, WIDTH // 2, eff_y + 4, center=True)
-    mx, my = pygame.mouse.get_pos()
-    if ev_type == "sv_apply":
-        ok_r = pygame.Rect(WIDTH // 2 - 160, HEIGHT // 2 + 120, 140, 40)
-        no_r = pygame.Rect(WIDTH // 2 + 20, HEIGHT // 2 + 120, 140, 40)
-        btn(screen, ok_r, "지원하기", F14, hover=ok_r.collidepoint(mx, my))
-        btn(screen, no_r, "포기하기", F14, hover=no_r.collidepoint(mx, my))
-        return ok_r, no_r
-    else:
-        ok_r = pygame.Rect(WIDTH // 2 - 70, HEIGHT // 2 + 130, 140, 40)
-        btn(screen, ok_r, "확인", F18, hover=ok_r.collidepoint(mx, my))
-        return ok_r, None
-
-
-def draw_event_choice(cy,mx,my):
+def draw_event_choice(cy, mx, my):
     screen.fill(BG)
     ev = g.pending_event
     ev_type = ev.get("type", "random")
     ch = ev.get("ch")
-    border_col = ORANGE if ev_type == "narsya_start" else GOLD if ev_type == "sv_apply" else ACCENT
-    title_col = ORANGE if ev_type == "narsya_start" else GOLD if ev_type == "sv_apply" else YELLOW
+    border_col = ORANGE if ev_type == "narsya_start" else GOLD if ev_type == "sv_apply" else GOLD if ev_type == "council" else ACCENT
+    title_col = ORANGE if ev_type == "narsya_start" else GOLD if ev_type == "sv_apply" else GOLD if ev_type == "council" else YELLOW
     panel(screen, WIDTH // 2 - 300, HEIGHT // 2 - 180, 600, 360, PANEL2, alpha=235, radius=16, border=border_col)
     mx, my = pygame.mouse.get_pos()
     if ev_type == "random" and ch and not ev.get("revealed"):
@@ -1253,11 +1240,17 @@ def draw_event_choice(cy,mx,my):
         btn(screen, ok_r, "지원하기", F14, hover=ok_r.collidepoint(mx, my))
         btn(screen, no_r, "포기하기", F14, hover=no_r.collidepoint(mx, my))
         return ok_r, no_r
-    if ev_type == "english":
+    elif ev_type == "english":
         ok_r = pygame.Rect(WIDTH // 2 - 160, HEIGHT // 2 + 120, 140, 40)
         no_r = pygame.Rect(WIDTH // 2 + 20, HEIGHT // 2 + 120, 140, 40)
         btn(screen, ok_r, "신청하기", F14, hover=ok_r.collidepoint(mx, my))
         btn(screen, no_r, "신청하지 않기", F14, hover=no_r.collidepoint(mx, my))
+        return ok_r, no_r
+    elif ev_type == "council":
+        ok_r = pygame.Rect(WIDTH // 2 - 160, HEIGHT // 2 + 120, 140, 40)
+        no_r = pygame.Rect(WIDTH // 2 + 20, HEIGHT // 2 + 120, 140, 40)
+        btn(screen, ok_r, "지원하기", F14, hover=ok_r.collidepoint(mx, my))
+        btn(screen, no_r, "지원 안 하기", F14, hover=no_r.collidepoint(mx, my))
         return ok_r, no_r
     else:
         ok_r = pygame.Rect(WIDTH // 2 - 70, HEIGHT // 2 + 130, 140, 40)
@@ -1284,8 +1277,10 @@ def draw_ending():
     txt(screen, f"전공: {g.major or '미정'}", F14, m_color, WIDTH // 2, HEIGHT // 2 - 60, center=True)
     if g.club:
         txt(screen, f"동아리: {g.club}", F12, CLUBS[g.club]["색"], WIDTH // 2, HEIGHT // 2 - 38, center=True)
+    if g.council:
+        txt(screen, "자치위원 경험 보유 ★", F12, GOLD, WIDTH // 2, HEIGHT // 2 - 18, center=True)
     if g.sv_intern:
-        txt(screen, "실리콘밸리 인턴 경험 보유", F12, GOLD, WIDTH // 2, HEIGHT // 2 - 18, center=True)
+        txt(screen, "실리콘밸리 인턴 경험 보유", F12, GOLD, WIDTH // 2, HEIGHT // 2 - (36 if g.council else 18), center=True)
     pygame.draw.line(screen, BORDER, (WIDTH // 2 - 300, HEIGHT // 2), (WIDTH // 2 + 300, HEIGHT // 2), 1)
     txt(screen, "최종 스탯", F14, GRAY, WIDTH // 2, HEIGHT // 2 + 16, center=True)
     sx = WIDTH // 2 - 300
@@ -1401,13 +1396,13 @@ while running:
                             else:
                                 g.notify("돈이 부족합니다!", RED)
                 elif g.view == "bag":
-                    for r,cname in bag_rect:
-                        if r.collidepoint(mx,my):
+                    for r, cname in bag_rect:
+                        if r.collidepoint(mx, my):
                             if SHOP_LIST[cname]['stats'] == "피로도":
                                 g.fatigue += SHOP_LIST[cname]['eff']
                                 g.bag_list.remove(cname)
                                 g.notify(f"{cname} 사용", GREEN)
-                                if g.fatigue < 0 :
+                                if g.fatigue < 0:
                                     g.fatigue = 0
                             else:
                                 g.use_item(cname)
@@ -1423,7 +1418,7 @@ while running:
                         text = friend_chat.input_text.strip()
                         if text:
                             friend_chat.send(text, g)
-                            friend_chat.input_text = "" 
+                            friend_chat.input_text = ""
                             friend_chat.scroll_offset = 999999
             elif g.scene == "event":
                 ok_r, no_r = draw_event_choice(108, mx, my)
@@ -1443,6 +1438,8 @@ while running:
                             g.accept_sv()
                         elif ev_type == "english":
                             g.accept_en()
+                        elif ev_type == "council":
+                            g.join_council(g.stats.get("사교성", 0))
                         g.pending_event = None
                         g.scene = "main"
                         if ev_type not in ("sv_apply",):
@@ -1450,6 +1447,8 @@ while running:
                     if no_r and no_r.collidepoint(mx, my):
                         if ev_type == "sv_apply":
                             g.decline_sv()
+                        elif ev_type == "council":
+                            g.notify("자치위원회 선거에 지원하지 않았습니다.", GRAY)
                         g.pending_event = None
                         g.scene = "main"
                         g.notify(f"{g.year_label()} 시작!", ACCENT)
@@ -1481,10 +1480,10 @@ while running:
         elif g.view == "shop":
             item_list = draw_shop(108, mx, my)
         elif g.view == "bag":
-            bag_rect = draw_bag(108,mx,my)
+            bag_rect = draw_bag(108, mx, my)
         draw_notification()
     elif g.scene == "event":
-        draw_event_choice(108,mx,my)
+        draw_event_choice(108, mx, my)
     elif g.scene == "ending_list":
         ending_list_btns = draw_ending_list()
     elif g.scene == "ending":
