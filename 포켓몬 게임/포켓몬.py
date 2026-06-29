@@ -479,7 +479,7 @@ class Game:
             if a>= 255:
                 sceece = True
             else:
-                
+                print(a)
 
 
     def use_item(self,cname):
