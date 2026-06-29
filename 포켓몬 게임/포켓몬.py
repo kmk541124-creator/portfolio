@@ -1,9 +1,11 @@
 import requests
 import pygame
+import threading
 from io import BytesIO
 import random
 import math
 import os
+
 pygame.init()
 WIDTH, HEIGHT = 1000, 680
 screen = pygame.display.set_mode((WIDTH, HEIGHT))
@@ -20,24 +22,116 @@ F14 = load_font(14)
 F12 = load_font(12)
 
 SAVE_FILE = "savegame.json"
-
 BG = (132, 180, 228)
 PANEL = (255, 255, 255)
 PANEL2 = (210, 230, 248)
 BORDER = (32, 48, 120)
 ACCENT = (220, 30, 30)
+GREEN = (60, 200, 120)
 WHITE = (255, 255, 255)
 GRAY = (140, 140, 160)
 DARK_GRAY = (60, 60, 80)
-BLACK = (0,0,0)
+GOLD = (255, 215, 0)
+BLACK = (0, 0, 0)
+
+BASE = "https://pokeapi.co/api/v2"
+
+TYPE_COLORS = {
+    "노말": (168, 168, 120), "불꽃": (240, 128, 48), "물": (104, 144, 240),
+    "풀": (120, 200, 80), "전기": (248, 208, 48), "얼음": (152, 216, 216),
+    "격투": (192, 48, 40), "독": (160, 64, 160), "땅": (224, 192, 104),
+    "비행": (168, 144, 240), "에스퍼": (248, 88, 136), "벌레": (168, 184, 32),
+    "바위": (184, 160, 56), "고스트": (112, 88, 152), "드래곤": (112, 56, 248),
+    "악": (112, 88, 72), "강철": (184, 184, 208), "페어리": (238, 153, 172),
+}
+
+MAP_NODES = {
+    "태초마을": {"conn": ["1번도로", "21번도로"], "type": "town"},
+    "1번도로": {"conn": ["태초마을", "회색시티"], "type": "route"},
+    "회색시티": {"conn": ["1번도로", "2번도로"], "type": "city"},
+    "2번도로": {"conn": ["회색시티", "황토마을"], "type": "route"},
+    "황토마을": {"conn": ["2번도로", "3번도로"], "type": "city"},
+    "3번도로": {"conn": ["황토마을", "홍련마을"], "type": "route"},
+    "홍련마을": {"conn": ["3번도로", "4번도로", "9번도로", "24번도로"], "type": "city"},
+    "24번도로": {"conn": ["홍련마을"], "type": "route"},
+    "4번도로": {"conn": ["홍련마을", "연분홍시티"], "type": "route"},
+    "9번도로": {"conn": ["홍련마을", "라벤더마을"], "type": "route"},
+    "연분홍시티": {"conn": ["4번도로", "5번도로", "6번도로"], "type": "city"},
+    "5번도로": {"conn": ["연분홍시티", "셀라돈시티"], "type": "route"},
+    "셀라돈시티": {"conn": ["5번도로", "16번도로"], "type": "city"},
+    "6번도로": {"conn": ["연분홍시티", "주홍시티"], "type": "route"},
+    "주홍시티": {"conn": ["6번도로", "11번도로"], "type": "city"},
+    "11번도로": {"conn": ["주홍시티", "라벤더마을"], "type": "route"},
+    "라벤더마을": {"conn": ["9번도로", "11번도로", "12번도로"], "type": "town"},
+    "12번도로": {"conn": ["라벤더마을", "진홍시티"], "type": "route"},
+    "16번도로": {"conn": ["셀라돈시티", "진홍시티"], "type": "route"},
+    "진홍시티": {"conn": ["16번도로", "12번도로", "19번도로"], "type": "city"},
+    "19번도로": {"conn": ["진홍시티", "21번도로"], "type": "route"},
+    "21번도로": {"conn": ["19번도로", "태초마을"], "type": "route"},
+}
+
+NODE_POS = {
+    "태초마을": (152, 856),
+    "1번도로": (152, 756),
+    "회색시티": (152, 572),
+    "2번도로": (152, 388),
+    "황토마을": (152, 180),
+    "3번도로": (336, 180),
+    "홍련마을": (490, 180),
+    "24번도로": (490, 296),
+    "4번도로": (602, 180),
+    "9번도로": (638, 276),
+    "연분홍시티": (490, 492),
+    "5번도로": (362, 492),
+    "셀라돈시티": (234, 492),
+    "6번도로": (490, 636),
+    "주홍시티": (596, 716),
+    "11번도로": (632, 572),
+    "라벤더마을": (724, 360),
+    "12번도로": (666, 668),
+    "16번도로": (234, 644),
+    "진홍시티": (334, 756),
+    "19번도로": (234, 848),
+    "21번도로": (152, 892),
+}
+
+ROUTE_POKEMON = {
+    "1번도로": [16, 19],
+}
+item_li = []
+ROUTE_TRAINER = {
+    "1번도로": [],
+    "2번도로": [],
+}
+
+ITEM_LIST = {
+    "몬스터볼":{"money":1000, "desc":"야생 포켓몬에게 던져서 잡기 위한 볼. 캡슐식으로 되어 있다."}
+}
 
 name_cache = {}
 img_cache = {}
+sil_cache = {}
+back_img_cache = {}
+_loading_set = set()
+_loading_lock = threading.Lock()
+
 SPRITE_URL = "https://raw.githubusercontent.com/PokeAPI/sprites/master/sprites/pokemon/{}.png"
-TOTAL = 1025
+BACK_SPRITE_URL = "https://raw.githubusercontent.com/PokeAPI/sprites/master/sprites/pokemon/back/{}.png"
+TOTAL = 151
 COL = 5
 CARD_W, CARD_H = 180, 180
+IMG_SIZE = 96
 book_scroll = 0
+scene_start = 0
+choice_name = None
+choice_desc = None
+choice_types = None
+tab_rects = []
+map_selected = None
+map_node_rects = {}
+map_ok_r = None
+map_no_r = None
+bg_imgs = {}
 
 def txt(surface, text, font, color, x, y, center=False, right=False):
     s = font.render(str(text), True, color)
@@ -61,51 +155,339 @@ def btn(surface, rect, label, font, active=True, hover=False):
     fc = GRAY if not active else WHITE
     panel(surface, rect.x, rect.y, rect.w, rect.h, bc, alpha=230, radius=8, border=ACCENT if active else DARK_GRAY)
     txt(surface, label, font, fc, rect.centerx, rect.centery, center=True)
-    
-def get_img_2x(pid):
+
+def _bg_load(pid):
+    if pid not in img_cache:
+        try:
+            data = requests.get(SPRITE_URL.format(pid), timeout=3).content
+            img = pygame.image.load(BytesIO(data)).convert_alpha()
+            img = pygame.transform.scale(img, (IMG_SIZE, IMG_SIZE))
+            img_cache[pid] = img
+        except:
+            img_cache[pid] = None
+    if pid not in name_cache:
+        try:
+            res = requests.get(f"https://pokeapi.co/api/v2/pokemon-species/{pid}", timeout=3)
+            for n in res.json()["names"]:
+                if n["language"]["name"] == "ko":
+                    name_cache[pid] = n["name"]
+                    break
+        except:
+            name_cache[pid] = str(pid)
+    with _loading_lock:
+        _loading_set.discard(pid)
+
+def _bg_load_sync(pid):
+    _bg_load(pid)
+    return img_cache.get(pid)
+
+def preload(pid):
+    with _loading_lock:
+        if pid not in img_cache and pid not in _loading_set:
+            _loading_set.add(pid)
+            threading.Thread(target=_bg_load, args=(pid,), daemon=True).start()
+
+def get_img(pid):
+    return img_cache.get(pid)
+
+def load_back_img(pid):
+    if pid in back_img_cache:
+        return back_img_cache[pid]
     try:
-        data = requests.get(SPRITE_URL.format(pid), timeout=3).content
+        data = requests.get(BACK_SPRITE_URL.format(pid), timeout=3).content
         img = pygame.image.load(BytesIO(data)).convert_alpha()
-        img = pygame.transform.scale_by(img, 2)
+        img = pygame.transform.scale_by(img, 4)
+        back_img_cache[pid] = img
         return img
     except:
+        back_img_cache[pid] = None
         return None
 
 def get_korean_name(pid):
-    if pid in name_cache:
-        return name_cache[pid]
+    return name_cache.get(pid, str(pid))
+
+def get_silhouette(pid):
+    if pid in sil_cache:
+        return sil_cache[pid]
+    img = img_cache.get(pid)
+    if img is None:
+        return None
     try:
-        res = requests.get(f"https://pokeapi.co/api/v2/pokemon-species/{pid}", timeout=3)
-        for n in res.json()["names"]:
-            if n["language"]["name"] == "ko":
-                name_cache[pid] = n["name"]
-                return name_cache[pid]
+        import numpy
+        sil = img.copy()
+        arr = pygame.surfarray.pixels3d(sil)
+        arr[:, :, :] = 0
+        del arr
+        sil_cache[pid] = sil
+        return sil
     except:
-        pass
-    name_cache[pid] = str(pid)
-    return name_cache[pid]
+        sil_cache[pid] = None
+        return None
+
+def load_starter_img(pid):
+    try:
+        data = requests.get(SPRITE_URL.format(pid), timeout=3).content
+        img = pygame.image.load(BytesIO(data)).convert_alpha()
+        return pygame.transform.scale_by(img, 3)
+    except:
+        return None
+
+def get_bg(location):
+    if location not in bg_imgs:
+        paths = {
+            "태초마을": "images/firsttown.png",
+            "회색시티": "images/graycity.webp",
+            "황토마을": "images/wangtotown.jpeg",
+            "홍련마을": "images/flowertown.webp",
+            "연분홍시티": "images/pinkcity.webp",
+            "셀라돈시티": "images/celldoncity.webp",
+        }
+        path = paths.get(location)
+        if path and os.path.exists(path):
+            img = pygame.image.load(path)
+            bg_imgs[location] = pygame.transform.scale(img, (WIDTH, HEIGHT))
+        else:
+            s = pygame.Surface((WIDTH, HEIGHT))
+            s.fill(BG)
+            bg_imgs[location] = s
+    return bg_imgs[location]
+
+def get_types_ko(pid):
+    res = requests.get(f"https://pokeapi.co/api/v2/pokemon/{pid}")
+    types = []
+    for t in res.json()["types"]:
+        type_res = requests.get(t["type"]["url"])
+        for n in type_res.json()["names"]:
+            if n["language"]["name"] == "ko":
+                types.append(n["name"])
+                break
+    return types
 
 def get_desc(pid):
     res = requests.get(f"https://pokeapi.co/api/v2/pokemon-species/{pid}")
-    for e in res.json()["flavor_text_entries"]:
+    entries = res.json()["flavor_text_entries"]
+    for e in entries:
         if e["language"]["name"] == "ko":
             return e["flavor_text"]
-        elif e["language"]["name"] == "en":
+    for e in entries:
+        if e["language"]["name"] == "en":
             return e["flavor_text"]
+    return ""
 
+def get_stats(pid):
+    res = requests.get(f"{BASE}/pokemon/{pid}").json()
+    return {s["stat"]["name"]: s["base_stat"] for s in res["stats"]}
+
+def fetch_move(url):
+    mv = requests.get(url).json()
+    name_ko = next((n["name"] for n in mv["names"] if n["language"]["name"] == "ko"), mv["name"])
+    return {
+        "name": name_ko,
+        "power": mv["power"] or 0,
+        "pp": mv["pp"],
+        "max_pp": mv["pp"],
+        "type": mv["type"]["name"],
+        "damage_class": mv["damage_class"]["name"],
+    }
+
+def get_my_moves(pid, level):
+    res = requests.get(f"{BASE}/pokemon/{pid}").json()
+    moves = {}
+    count = 0
+    for m in res["moves"]:
+        for vgd in m["version_group_details"]:
+            if vgd["version_group"]["name"] == "red-blue" and vgd["move_learn_method"]["name"] == "level-up":
+                if vgd["level_learned_at"] <= level:
+                    moves[count] = fetch_move(m["move"]["url"])
+                    count += 1
+                    if count >= 4:
+                        break
+        if count >= 4:
+            break
+    return moves
+
+def check_new_move(pid, old_level, new_level):
+    res = requests.get(f"{BASE}/pokemon/{pid}").json()
+    new_moves = []
+    for m in res["moves"]:
+        for vgd in m["version_group_details"]:
+            if vgd["version_group"]["name"] == "red-blue" and vgd["move_learn_method"]["name"] == "level-up":
+                lv = vgd["level_learned_at"]
+                if old_level < lv <= new_level:
+                    new_moves.append(fetch_move(m["move"]["url"]))
+    return new_moves
+
+def calc_hp(base_hp, level, iv=15, ev=0):
+    return int((base_hp * 2 + iv + ev // 4) * level // 100) + level + 10
+
+def calc_stat(base_stat, level, iv=15, ev=0):
+    return int((base_stat * 2 + iv + ev // 4) * level // 100) + 5
+
+def calc_damage(level, attack, defense, power):
+    if power == 0:
+        return 0
+    dmg = int(((2 * level / 5 + 2) * power * attack / max(1, defense)) / 50) + 2
+    dmg = int(dmg * random.uniform(0.85, 1.0))
+    return max(1, dmg)
+
+def catch(pid):
+    res = requests.get(f"https://pokeapi.co/api/v2/pokemon-species/{pid}").json()
+    capture_rate = res["capture_rate"] 
+    return capture_rate
+
+def do_player_turn(move_idx):
+    mv = g.my_moves[move_idx]
+    if mv["pp"] <= 0:
+        g.battle_msgs = ["기술의 PP가 없습니다!"]
+        g.battle_after = "command"
+        g.battle_state = "msg"
+        return
+
+    g.my_moves[move_idx]["pp"] -= 1
+    g.poket_list[g.my_pid]["moves"][move_idx]["pp"] -= 1
+
+    msgs = []
+    player_first = g.my_speed >= g.battle_speed
+
+    def player_attack():
+        dc = mv["damage_class"]
+        atk = g.my_sp_attack if dc == "special" else g.my_attack
+        def_ = g.battle_sp_defense if dc == "special" else g.battle_defense
+        dmg = calc_damage(g.my_level, atk, def_, mv["power"])
+        g.battle_hp = max(0, g.battle_hp - dmg)
+        msgs.append(f"{get_korean_name(g.my_pid)}이(가) {mv['name']}을(를) 사용했다!")
+        if mv["power"] > 0:
+            msgs.append(f"상대에게 {dmg}의 데미지!")
+        return g.battle_hp <= 0
+
+    def enemy_attack():
+        enemy_power = random.randint(35, 55)
+        dmg = calc_damage(g.battle_level, g.battle_attack, g.my_defense, enemy_power)
+        g.my_hp = max(0, g.my_hp - dmg)
+        msgs.append(f"야생의 {g.battle_target}이(가) 공격했다!")
+        msgs.append(f"내 포켓몬에게 {dmg}의 데미지!")
+        return g.my_hp <= 0
+
+    if player_first:
+        if player_attack():
+            msgs.append(f"야생의 {g.battle_target}이(가) 쓰러졌다!")
+            g.battle_msgs = msgs
+            g.battle_after = "win"
+            g.battle_state = "msg"
+            return
+        if enemy_attack():
+            msgs.append(f"{get_korean_name(g.my_pid)}이(가) 쓰러졌다!")
+            g.battle_msgs = msgs
+            g.battle_after = "lose"
+            g.battle_state = "msg"
+            return
+    else:
+        if enemy_attack():
+            msgs.append(f"{get_korean_name(g.my_pid)}이(가) 쓰러졌다!")
+            g.battle_msgs = msgs
+            g.battle_after = "lose"
+            g.battle_state = "msg"
+            return
+        if player_attack():
+            msgs.append(f"야생의 {g.battle_target}이(가) 쓰러졌다!")
+            g.battle_msgs = msgs
+            g.battle_after = "win"
+            g.battle_state = "msg"
+            return
+
+    g.battle_msgs = msgs
+    g.battle_after = "command"
+    g.battle_state = "msg"
 
 class Game:
     def __init__(self):
         self.scene = "title"
         self.t = 0
-        self.notification = None
-        self.notif_timer = 0
 
     def start(self):
-        self.starting = ""
-        self.poket = []
+        self.poket = 0
+        self.poket_list = {}
+        self.discovered = set()
+        self.team = {}
+        self.item = []
+        self.money = 50000
+        self.current_location = "태초마을"
         self.scene = "first"
         self.view = None
+        self.battle_type = None
+        self.battle_target = None
+        self.battle_pid = None
+        self.bag_list = []
+        self.battle_level = 0
+        self.battle_hp = 0
+        self.battle_max_hp = 0
+        self.battle_attack = 0
+        self.battle_defense = 0
+        self.battle_sp_attack = 0
+        self.battle_sp_defense = 0
+        self.battle_speed = 0
+        self.my_pid = None
+        self.my_level = 0
+        self.my_hp = 0
+        self.my_max_hp = 0
+        self.my_attack = 0
+        self.my_defense = 0
+        self.my_sp_attack = 0
+        self.my_sp_defense = 0
+        self.my_speed = 0
+        self.my_moves = {}
+        self.pending_move = None
+        self.battle_state = "command"
+        self.battle_msgs = []
+        self.battle_after = "command"
+
+    def find_poket(self, location):
+        if random.random() < 0.25:
+            trainers = ROUTE_TRAINER.get(location, [])
+            if trainers:
+                return ("trainer", random.choice(trainers))
+            return None
+        else:
+            pokemons = ROUTE_POKEMON.get(location, [])
+            if pokemons:
+                return ("pokemon", random.choice(pokemons))
+            return None
+    
+    def buy_item(self, cname):
+        self.item.append(cname)
+
+    def level_up(self, pid):
+        old_lv = self.poket_list[pid]["lv"]
+        new_lv = old_lv + 1
+        self.poket_list[pid]["lv"] = new_lv
+        stats = self.poket_list[pid]["stat"]
+        self.poket_list[pid]["max_hp"] = calc_hp(stats["hp"], new_lv)
+        new_moves = check_new_move(pid, old_lv, new_lv)
+        for mv in new_moves:
+            cur = self.poket_list[pid]["moves"]
+            if len(cur) < 4:
+                cur[len(cur)] = mv
+            else:
+                self.pending_move = mv
+                self.scene = "move_learn"
+
+    def use_monsterball(self, type):
+        sceece = False
+        if type == "nomal":
+            a = (3*g.battle_max_hp -2 *g.battle_hp) * catch(g.battle_pid) * 1
+            a /= 3*g.battle_max_hp
+            if a>= 255:
+                sceece = True
+            else:
+                
+
+
+    def use_item(self,cname):
+        item_li.remove(cname)
+        if cname == "몬스터볼":
+            self.use_monsterball()
+
+    
 
 g = Game()
 
@@ -155,11 +537,11 @@ def draw_fist(cy, mx, my):
     if _pokeball is None:
         _pokeball = pygame.image.load('images/poketball.webp')
     if _fire_img is None:
-        _fire_img = get_img_2x(4)
+        _fire_img = load_starter_img(4)
     if _water_img is None:
-        _water_img = get_img_2x(7)
+        _water_img = load_starter_img(7)
     if _wrong_img is None:
-        _wrong_img = get_img_2x(1)
+        _wrong_img = load_starter_img(1)
 
     elapsed = pygame.time.get_ticks() - scene_start
     screen.fill(WHITE)
@@ -176,20 +558,12 @@ def draw_fist(cy, mx, my):
     screen.blit(_fist_img, img_rect)
 
     if finish:
-        for pid, img, cx in [
-            (4, _fire_img, 300),
-            (7, _water_img, 500),
-            (1, _wrong_img, 700),
-        ]:
+        for pid, img, cx in [(4, _fire_img, 300), (7, _water_img, 500), (1, _wrong_img, 700)]:
             ball_rect = _pokeball.get_rect(center=(cx, HEIGHT // 2 + 20))
             hovered = ball_rect.collidepoint(mx, my)
-            if hovered:
-                show = img
-            else:
-                show = _pokeball
+            show = img if (hovered and img) else _pokeball
             r = show.get_rect(center=(cx, HEIGHT // 2 + 20))
-            screen.blit(show, r)    
-                
+            screen.blit(show, r)
 
     if elapsed < 3000:
         msg = "포켓몬 세상에 어서오렴!"
@@ -209,110 +583,446 @@ def draw_fist(cy, mx, my):
     bh = th + 24
     pygame.draw.rect(screen, WHITE, (bx, by, bw, bh), border_radius=10)
     pygame.draw.rect(screen, BORDER, (bx, by, bw, bh), 2, border_radius=10)
-    pygame.draw.polygon(screen, WHITE, [
-        (img_x - 10, by),
-        (img_x + 10, by),
-        (img_x, by - 15)
-    ])
-    pygame.draw.lines(screen, BORDER, False, [
-        (img_x - 10, by),
-        (img_x, by - 15),
-        (img_x + 10, by)
-    ], 2)
+    pygame.draw.polygon(screen, WHITE, [(img_x - 10, by), (img_x + 10, by), (img_x, by - 15)])
+    pygame.draw.lines(screen, BORDER, False, [(img_x - 10, by), (img_x, by - 15), (img_x + 10, by)], 2)
     screen.blit(ts, (bx + 20, by + 12))
 
-def draw_main_bg():
-    # 하늘
-    screen.fill((120, 192, 240))
+def draw_main(bg_img):
+    screen.blit(bg_img, (0, 0))
+    mx, my = pygame.mouse.get_pos()
+    txt(screen, "포켓몬스터", F18, BLACK, 460, 15)
+    txt(screen, f"돈: {g.money}", F18, GOLD, 460, 40)
+    tabs = [("야생", "wild"), ("체육관", "gym"), ("포켓몬 센터", "center"),
+            ("상점", "shop"), ("가방", "bag"), ("지도", "map"), ("팀", "team"), ("도감", "book")]
+    tab_rects = []
+    tab_w = (WIDTH - 20) // len(tabs)
+    for i, (label, key) in enumerate(tabs):
+        r = pygame.Rect(10 + i * tab_w, 66, tab_w - 4, 34)
+        active = g.view == key
+        bc = (40, 60, 130) if active else PANEL2
+        panel(screen, r.x, r.y, r.w, r.h, bc, alpha=220, radius=6, border=ACCENT if active else DARK_GRAY)
+        txt(screen, label, F12, WHITE if active else BLACK, r.centerx, r.centery, center=True)
+        tab_rects.append((r, key))
+    content_y = 108
+    if g.view == "wild": draw_wild(content_y, mx, my)
+    elif g.view == "gym": draw_gym(content_y, mx, my)
+    elif g.view == "center": draw_center(content_y, mx, my)
+    elif g.view == "shop": 
+        global item_li
+        item_li = draw_shop(content_y, mx, my)
+    elif g.view == "bag": draw_bag(content_y, mx, my)
+    elif g.view == "map": draw_map(content_y, mx, my)
+    elif g.view == "team": draw_team(content_y, mx, my)
+    elif g.view == "book": draw_book(content_y)
+    return tab_rects
 
-    # 구름
-    for cx, cy in [(150, 60), (400, 40), (700, 70), (900, 50)]:
-        pygame.draw.rect(screen, WHITE, (cx - 40, cy, 80, 20))
-        pygame.draw.rect(screen, WHITE, (cx - 56, cy + 8, 112, 20))
-        pygame.draw.rect(screen, WHITE, (cx - 24, cy - 12, 48, 16))
+def draw_wild(cy, mx, my):
+    panel(screen, 10, cy, WIDTH - 20, HEIGHT - cy - 62, GREEN, alpha=255, radius=10, border=PANEL2)
+    b = pygame.Rect(WIDTH // 2 - 100, HEIGHT // 2, 200, 48)
+    btn(screen, b, "풀숲 뒤지기", F18, hover=b.collidepoint(mx, my))
+    return b
 
-    # 태양
-    pygame.draw.rect(screen, (255, 224, 32), (880, 30, 56, 56))
-    pygame.draw.rect(screen, (255, 224, 32), (872, 42, 72, 32))
+def draw_gym(cy, mx, my):
+    panel(screen, 10, cy, WIDTH - 20, HEIGHT - cy - 62, PANEL, alpha=255, radius=10, border=PANEL2)
 
-    # 잔디 레이어
-    pygame.draw.rect(screen, (120, 200, 64), (0, 340, WIDTH, HEIGHT))
-    pygame.draw.rect(screen, (96, 168, 48), (0, 360, WIDTH, HEIGHT))
-    pygame.draw.rect(screen, (80, 144, 40), (0, 380, WIDTH, HEIGHT))
+def draw_center(cy, mx, my):
+    panel(screen, 10, cy, WIDTH - 20, HEIGHT - cy - 62, PANEL, alpha=255, radius=10, border=PANEL2)
 
-    # 풀숲 (어두운 잔디 타일)
-    for gx in range(0, 380, 32):
-        pygame.draw.rect(screen, (64, 128, 32), (gx, 340, 16, 16))
-    for gx in range(420, WIDTH, 32):
-        pygame.draw.rect(screen, (64, 128, 32), (gx, 340, 16, 16))
+def draw_shop(cy, mx, my):
+    panel(screen, 10, cy, WIDTH - 20, HEIGHT - cy - 62, PANEL, alpha=180, radius=10, border=BORDER)
+    txt(screen, "상점", F18, ACCENT, WIDTH // 2, cy + 18, center=True)
+    txt(screen, "상점에서 물건을 구매하고 모험을 계속하세요", F12, GRAY, WIDTH // 2, cy + 42, center=True)
+    item_list = []
+    names = list(ITEM_LIST.keys())
+    for i, cname in enumerate(names):
+        info = ITEM_LIST[cname]
+        cx2 = 30 + (i % 2) * 480
+        cy2 = cy + 70 + (i // 2) * 160
+        w, h = 450, 145
+        panel(screen, cx2, cy2, w, h, (40, 60, 100), alpha=220, radius=12, border=True)
+        txt(screen, cname, F18, BLACK, cx2 + 20, cy2 + 14)
+        txt(screen, info["desc"], F12, GRAY, cx2 + 20, cy2 + 46)
+        txt(screen, f"가격: {info['money']}", F14, GOLD, cx2 + 20, cy2 + 100)
+        count = g.item.count(cname)
+        if count > 0:
+            txt(screen, f"보유 x{count}", F12, GREEN, cx2 + w - 20, cy2 + 14, right=True)
+        r = pygame.Rect(cx2 + w - 110, cy2 + h - 42, 95, 30)
+        btn(screen, r, "구매하기", F12, hover=r.collidepoint(mx, my))
+        item_list.append((r, cname))
+    return item_list
 
-    # 꽃
-    for fx, fy, fc in [(100, 350, (255, 80, 80)), (180, 370, (255, 200, 80)),
-                        (560, 355, (255, 80, 80)), (640, 375, (255, 200, 80)),
-                        (780, 360, (200, 80, 255)), (850, 380, (255, 80, 80))]:
-        pygame.draw.rect(screen, fc, (fx, fy, 8, 8))
-        pygame.draw.rect(screen, (80, 160, 48), (fx + 2, fy + 6, 4, 8))
+def draw_bag(cy, mx, my):
+    panel(screen, 10, cy, WIDTH - 20, HEIGHT - cy - 62, PANEL, alpha=180, radius=10, border=BORDER)
+    txt(screen, "가방", F18, ACCENT, WIDTH // 2, cy + 18, center=True)
+    txt(screen, "소지하고 있는 아이템 입니다", F12, GRAY, WIDTH // 2, cy + 42, center=True)
+    bag_rect = []
+    seen = []
+    for cname in g.item:
+        if cname not in seen:
+            seen.append(cname)
+    for i, cname in enumerate(seen):
+        info = ITEM_LIST[cname]
+        cx2 = 30 + (i % 2) * 480
+        cy2 = cy + 70 + (i // 2) * 160
+        w, h = 450, 145
+        panel(screen, cx2, cy2, w, h, (40, 60, 100), alpha=220, radius=12, border=True)
+        txt(screen, cname, F18, BLACK, cx2 + 20, cy2 + 14)
+        count = g.item.count(cname)
+        txt(screen, f"x{count}", F12, GREEN, cx2 + w - 20, cy2 + 14, right=True)
+        txt(screen, info["desc"], F12, GRAY, cx2 + 20, cy2 + 46)
+        r = pygame.Rect(cx2 + w - 110, cy2 + h - 42, 95, 30)
+        btn(screen, r, "사용하기", F12, hover=r.collidepoint(mx, my))
+        bag_rect.append((r, cname))
+    return bag_rect
 
-    # 경로
-    pygame.draw.rect(screen, (208, 184, 120), (380, 340, 200, HEIGHT))
-    pygame.draw.rect(screen, (184, 160, 96), (388, 340, 8, HEIGHT))
-    pygame.draw.rect(screen, (184, 160, 96), (572, 340, 8, HEIGHT))
+def draw_team(cy, mx, my):
+    panel(screen, 10, cy, WIDTH - 20, HEIGHT - cy - 10, PANEL, alpha=255, radius=10, border=PANEL2)
+    txt(screen, "보유 포켓몬", F14, DARK_GRAY, 30, cy + 14)
+    txt(screen, "팀 (최대 6)", F14, DARK_GRAY, WIDTH // 2 + 20, cy + 14)
+    pygame.draw.line(screen, PANEL2, (WIDTH // 2, cy + 10), (WIDTH // 2, HEIGHT - 20), 2)
 
-    # 나무 (1세대 스타일 - 동그란 상단)
-    for tx in [40, 160, 680, 820, 950]:
-        # 기둥
-        pygame.draw.rect(screen, (112, 72, 40), (tx + 8, 270, 16, 80))
-        # 잎 (3단)
-        pygame.draw.rect(screen, (32, 96, 24), (tx - 16, 230, 64, 52))
-        pygame.draw.rect(screen, (48, 128, 32), (tx - 8, 208, 48, 32))
-        pygame.draw.rect(screen, (72, 160, 48), (tx, 192, 32, 24))
-        # 하이라이트
-        pygame.draw.rect(screen, (96, 192, 64), (tx + 4, 196, 12, 8))
+    have_pids = sorted(g.poket_list.keys())
+    for i, pid in enumerate(have_pids):
+        col = i % 3
+        row = i // 3
+        x = 30 + col * 150
+        y = cy + 44 + row * 110
+        is_in_team = pid in g.team
+        bc = (200, 240, 200) if is_in_team else PANEL2
+        r = pygame.Rect(x, y, 120, 96)
+        panel(screen, x, y, 120, 96, bc, alpha=220, radius=8, border=BORDER)
+        img = get_img(pid)
+        if img:
+            screen.blit(img, (x + 12, y + 4))
+        lv = g.poket_list[pid]["lv"]
+        txt(screen, get_korean_name(pid), F12, BLACK, x + 60, y + 68, center=True)
+        txt(screen, f"Lv.{lv}", F12, GRAY, x + 60, y + 82, center=True)
+        if r.collidepoint(mx, my):
+            pygame.draw.rect(screen, ACCENT, r, 2, border_radius=8)
 
-    # 건물 (포켓몬 센터 느낌)
-    pygame.draw.rect(screen, (248, 240, 216), (420, 180, 200, 168))
-    # 지붕
-    pygame.draw.rect(screen, (216, 64, 64), (412, 164, 216, 24))
-    pygame.draw.rect(screen, (240, 80, 80), (420, 156, 200, 16))
-    # 지붕 테두리
-    pygame.draw.rect(screen, (160, 48, 48), (412, 180, 216, 4))
-    # 문
-    pygame.draw.rect(screen, (168, 216, 248), (488, 280, 64, 68))
-    pygame.draw.rect(screen, (136, 184, 216), (488, 280, 32, 68))
-    # 창문
-    pygame.draw.rect(screen, (168, 216, 248), (432, 210, 48, 36))
-    pygame.draw.rect(screen, (136, 184, 216), (432, 210, 24, 36))
-    pygame.draw.rect(screen, (168, 216, 248), (556, 210, 48, 36))
-    pygame.draw.rect(screen, (136, 184, 216), (556, 210, 24, 36))
-    # 건물 이름
-    pygame.draw.rect(screen, (240, 80, 80), (444, 248, 152, 20))
+    team_rects = []
+    team_keys = list(g.team.keys())
+    for i in range(6):
+        col = i % 2
+        row = i // 2
+        x = WIDTH // 2 + 30 + col * 210
+        y = cy + 44 + row * 120
+        r = pygame.Rect(x, y, 180, 100)
+        if i < len(team_keys):
+            pid = team_keys[i]
+            panel(screen, x, y, 180, 100, (220, 240, 220), alpha=220, radius=8, border=BORDER)
+            img = get_img(pid)
+            if img:
+                screen.blit(img, (x + 8, y + 4))
+            txt(screen, get_korean_name(pid), F14, BLACK, x + 90, y + 70, center=True)
+            txt(screen, "✕", F14, ACCENT, x + 156, y + 8)
+        else:
+            panel(screen, x, y, 180, 100, PANEL2, alpha=160, radius=8, border=GRAY)
+            txt(screen, f"슬롯 {i + 1}", F12, GRAY, x + 90, y + 50, center=True)
+        team_rects.append(r)
 
-    # 표지판
-    pygame.draw.rect(screen, (112, 72, 40), (310, 280, 8, 64))
-    pygame.draw.rect(screen, (248, 232, 160), (286, 252, 56, 32))
-    pygame.draw.rect(screen, (200, 160, 80), (286, 252, 56, 32), 2)
+    return have_pids, team_rects
 
-    # 울타리
-    for fx in range(620, 860, 32):
-        pygame.draw.rect(screen, (216, 192, 144), (fx, 330, 8, 24))
-        pygame.draw.rect(screen, (216, 192, 144), (fx, 316, 32, 8))
+def draw_map(cy, mx, my):
+    global map_node_rects, map_ok_r, map_no_r
+    MX, MY = 15, cy + 5
+    MW, MH = WIDTH - 30, HEIGHT - cy - 20
 
-    # 연못
-    pygame.draw.rect(screen, (96, 168, 232), (80, 390, 120, 64))
-    pygame.draw.rect(screen, (120, 192, 248), (88, 398, 104, 12))
-    pygame.draw.rect(screen, (64, 128, 48), (76, 386, 128, 8))
+    FRAME_C = (168, 168, 184)
+    FRAME_L = (208, 208, 224)
+    FRAME_D = (136, 136, 152)
+    ROUTE_C = (228, 196, 228)
+    LAND_C = (112, 184, 88)
+    WATER_C = (168, 212, 248)
+    T_BG = (244, 248, 252)
+    T_BD = (12, 12, 20)
 
-    # 하단 풀 디테일
-    for gx in range(0, WIDTH, 16):
-        if gx < 376 or gx > 584:
-            h = random.randint(4, 10)
-            pygame.draw.rect(screen, (80, 144, 40), (gx + 4, 340 - h, 4, h))
-    
-def draw_main(cy, mx, my):
-    draw_main_bg()
+    def sc(rx, ry):
+        return int(MX + rx * MW / 1000), int(MY + ry * MH / 1000)
 
+    def R(rx, ry, rw, rh, c):
+        ax, ay = sc(rx, ry)
+        bx2, by2 = sc(rx + rw, ry + rh)
+        pygame.draw.rect(screen, c, (ax, ay, max(1, bx2 - ax), max(1, by2 - ay)))
 
-def draw_choice(cname, desc, cy, mx, my):
+    pygame.draw.rect(screen, FRAME_C, (MX, MY, MW, MH), border_radius=4)
+    fm = max(4, int(14 * MW / 1000))
+    IX, IY = MX + fm, MY + fm
+    IW, IH = MW - fm * 2, MH - fm * 2
+    pygame.draw.rect(screen, ROUTE_C, (IX, IY, IW, IH))
+
+    for lx, ly, lw, lh in [
+        (16, 16, 968, 215),
+        (16, 16, 215, 968),
+        (231, 231, 175, 535),
+        (231, 231, 375, 195),
+        (641, 16, 195, 420),
+        (841, 16, 143, 968),
+        (491, 601, 353, 383),
+    ]:
+        R(lx, ly, lw, lh, LAND_C)
+
+    for wx, wy, ww, wh in [
+        (16, 776, 215, 208),
+        (641, 441, 200, 543),
+        (406, 426, 235, 250),
+        (686, 16, 155, 215),
+        (231, 776, 260, 208),
+    ]:
+        R(wx, wy, ww, wh, WATER_C)
+
+    RW = 68
+    for rx2, ry2, rw2, rh2 in [
+        (118, 776, RW, 208),
+        (118, 231, RW, 296),
+        (183, 148, 308, RW),
+        (461, 148, RW, 83),
+        (461, 231, RW, 195),
+        (529, 148, 162, RW),
+        (661, 148, RW, 293),
+        (231, 426, 230, RW),
+        (231, 494, RW, 282),
+        (299, 701, 362, RW),
+        (593, 494, RW, 282),
+        (461, 426, 200, RW),
+    ]:
+        R(rx2, ry2, rw2, rh2, ROUTE_C)
+
+    fw = max(3, int(8 * MW / 1000))
+    pygame.draw.rect(screen, FRAME_D, (IX, IY, IW, IH), fw)
+
+    for jx, jy in [(16, 16), (500, 16), (984, 16), (16, 500), (984, 500), (16, 984), (500, 984), (984, 984)]:
+        jsx, jsy = sc(jx, jy)
+        jr = max(4, int(17 * MW / 1000))
+        pygame.draw.circle(screen, FRAME_L, (jsx, jsy), jr)
+        pygame.draw.circle(screen, FRAME_D, (jsx, jsy), jr, 2)
+
+    current = g.current_location
+    reachable = set(MAP_NODES[current]["conn"])
+    node_rects = {}
+
+    for name in MAP_NODES:
+        if name not in NODE_POS:
+            continue
+        nx, ny = NODE_POS[name]
+        sx, sy = sc(nx, ny)
+        ntype = MAP_NODES[name]["type"]
+        is_current = (name == current)
+        is_reachable = (name in reachable)
+        is_route = (ntype == "route")
+
+        if is_route:
+            rc = max(5, int(11 * MW / 1000))
+            if is_reachable:
+                pygame.draw.circle(screen, (210, 248, 210), (sx, sy), rc)
+                pygame.draw.circle(screen, (30, 150, 30), (sx, sy), rc, 2)
+            else:
+                pygame.draw.circle(screen, ROUTE_C, (sx, sy), rc)
+                pygame.draw.circle(screen, T_BD, (sx, sy), rc, 1)
+            node_rects[name] = pygame.Rect(sx - rc - 4, sy - rc - 4, rc * 2 + 8, rc * 2 + 8)
+        else:
+            sq = max(10, int(22 * MW / 1000))
+            sqr = pygame.Rect(sx - sq, sy - sq, sq * 2, sq * 2)
+            if is_current:
+                pygame.draw.rect(screen, T_BG, sqr)
+                pygame.draw.rect(screen, T_BD, sqr, 1)
+                outer_sq = sq + max(4, int(7 * MW / 1000))
+                outer = pygame.Rect(sx - outer_sq, sy - outer_sq, outer_sq * 2, outer_sq * 2)
+                pygame.draw.rect(screen, T_BD, outer, max(3, int(5 * MW / 1000)))
+            elif is_reachable:
+                pygame.draw.rect(screen, (210, 248, 210), sqr)
+                pygame.draw.rect(screen, (30, 150, 30), sqr, 2)
+            else:
+                pygame.draw.rect(screen, T_BG, sqr)
+                pygame.draw.rect(screen, T_BD, sqr, 1)
+            ns = F12.render(name, True, T_BD)
+            screen.blit(ns, (sqr.right + 3, sqr.centery - ns.get_height() // 2))
+            node_rects[name] = pygame.Rect(sqr.x, sqr.y, sqr.w + ns.get_width() + 10, sqr.h)
+
+    loc_surf = F14.render(current, True, T_BD)
+    bg_r = pygame.Rect(MX + 8, MY + 8, loc_surf.get_width() + 12, loc_surf.get_height() + 8)
+    pygame.draw.rect(screen, T_BG, bg_r)
+    screen.blit(loc_surf, (MX + 14, MY + 12))
+
+    map_node_rects = node_rects
+
+    if map_selected and map_selected in MAP_NODES:
+        ppx, ppy = WIDTH // 2 - 180, HEIGHT // 2 - 70
+        pygame.draw.rect(screen, WHITE, (ppx, ppy, 360, 140), border_radius=12)
+        pygame.draw.rect(screen, BORDER, (ppx, ppy, 360, 140), 2, border_radius=12)
+        txt(screen, f"{map_selected}(으)로 이동하시겠습니까?", F14, BLACK, WIDTH // 2, ppy + 36, center=True)
+        ok_r = pygame.Rect(ppx + 20, ppy + 82, 140, 38)
+        no_r = pygame.Rect(ppx + 200, ppy + 82, 140, 38)
+        btn(screen, ok_r, "이동하기", F14, hover=ok_r.collidepoint(mx, my))
+        btn(screen, no_r, "취소", F14, hover=no_r.collidepoint(mx, my))
+        map_ok_r = ok_r
+        map_no_r = no_r
+    else:
+        map_ok_r = None
+        map_no_r = None
+
+def draw_battle_choice(cy, mx, my):
+    screen.fill(BG)
+    panel(screen, WIDTH // 2 - 300, HEIGHT // 2 - 180, 600, 360, PANEL2, alpha=235, radius=16, border=True)
+    if g.battle_type == "trainer":
+        txt(screen, f"{g.battle_target}가 도전장을 내민다!", F18, BLACK, WIDTH // 2, HEIGHT // 2 - 148, center=True)
+    else:
+        txt(screen, f"야생의 {g.battle_target}이 나타났다!", F18, BLACK, WIDTH // 2, HEIGHT // 2 - 148, center=True)
+    pygame.draw.line(screen, BORDER, (WIDTH // 2 - 270, HEIGHT // 2 - 122), (WIDTH // 2 + 270, HEIGHT // 2 - 122), 1)
+    ok_r = pygame.Rect(WIDTH // 2 - 160, HEIGHT // 2 + 120, 140, 40)
+    no_r = pygame.Rect(WIDTH // 2 + 20, HEIGHT // 2 + 120, 140, 40)
+    btn(screen, ok_r, "싸운다", F14, hover=ok_r.collidepoint(mx, my))
+    if g.battle_type == "pokemon":
+        btn(screen, no_r, "도망간다", F14, hover=no_r.collidepoint(mx, my))
+    return ok_r, no_r
+
+def draw_battle_moves(mx, my):
+    pygame.draw.rect(screen, WHITE, (0, HEIGHT - 160, WIDTH, 160))
+    pygame.draw.rect(screen, BLACK, (0, HEIGHT - 160, WIDTH, 160), 3)
+    move_rects = []
+    for i in range(4):
+        col = i % 2
+        row = i // 2
+        x = col * (WIDTH // 2)
+        y = HEIGHT - 160 + row * 80
+        r = pygame.Rect(x, y, WIDTH // 2, 80)
+        pygame.draw.rect(screen, BLACK, r, 1)
+        if i < len(g.my_moves):
+            mv = g.my_moves[i]
+            tc = TYPE_COLORS.get(mv["type"], GRAY)
+            s = pygame.Surface((WIDTH // 2, 80), pygame.SRCALPHA)
+            pygame.draw.rect(s, (*tc, 60), (0, 0, WIDTH // 2, 80))
+            screen.blit(s, (x, y))
+            txt(screen, mv["name"], F18, BLACK, x + 20, y + 10)
+            txt(screen, f"PP {mv['pp']}/{mv['max_pp']}", F12, GRAY, x + 20, y + 46)
+            txt(screen, mv["type"], F12, tc, x + WIDTH // 2 - 20, y + 10, right=True)
+            txt(screen, f"위력 {mv['power']}", F12, GRAY, x + WIDTH // 2 - 20, y + 46, right=True)
+        else:
+            txt(screen, "-", F18, GRAY, x + WIDTH // 4, y + 30, center=True)
+        move_rects.append(r)
+    back_r = pygame.Rect(WIDTH - 130, HEIGHT - 48, 120, 38)
+    btn(screen, back_r, "돌아가기", F12, hover=back_r.collidepoint(mx, my))
+    return move_rects, back_r
+
+def draw_battle_items(mx, my):
+    pygame.draw.rect(screen, WHITE, (0, HEIGHT - 160, WIDTH, 160))
+    pygame.draw.rect(screen, BLACK, (0, HEIGHT - 160, WIDTH, 160), 3)
+    seen = []
+    for cname in g.item:
+        if cname not in seen:
+            seen.append(cname)
+    item_rects = []
+    for i, cname in enumerate(seen):
+        count = g.item.count(cname)
+        x = WIDTH // 2 + (i % 2) * 240 + 20
+        y = HEIGHT - 150 + (i // 2) * 60 + 10
+        r = pygame.Rect(x, y, 200, 48)
+        btn(screen, r, f"{cname} x{count}", F14, hover=r.collidepoint(mx, my))
+        item_rects.append((r, cname))
+    if not seen:
+        txt(screen, "아이템이 없습니다", F14, GRAY, WIDTH // 2 + 230, HEIGHT - 80, center=True)
+    back_r = pygame.Rect(WIDTH // 2 + 20, HEIGHT - 48, 110, 36)
+    btn(screen, back_r, "돌아가기", F12, hover=back_r.collidepoint(mx, my))
+    return item_rects, back_r
+
+def draw_move_learn(mx, my):
+    screen.fill(BG)
+    panel(screen, WIDTH // 2 - 320, 60, 640, 560, PANEL2, alpha=235, radius=16, border=True)
+    if g.pending_move:
+        txt(screen, f"{get_korean_name(g.my_pid)}이(가) {g.pending_move['name']}을(를) 배우려 합니다!", F14, BLACK, WIDTH // 2, 100, center=True)
+    txt(screen, "교체할 기술을 선택하세요 (또는 포기)", F12, GRAY, WIDTH // 2, 130, center=True)
+    slot_rects = []
+    for i in range(4):
+        x = WIDTH // 2 - 280
+        y = 160 + i * 90
+        r = pygame.Rect(x, y, 560, 76)
+        if i < len(g.my_moves):
+            mv = g.my_moves[i]
+            tc = TYPE_COLORS.get(mv["type"], GRAY)
+            panel(screen, x, y, 560, 76, (240, 240, 248), alpha=220, radius=8, border=BORDER)
+            txt(screen, mv["name"], F18, BLACK, x + 20, y + 12)
+            txt(screen, f"PP {mv['pp']}/{mv['max_pp']}", F12, GRAY, x + 20, y + 46)
+            txt(screen, mv["type"], F12, tc, x + 540, y + 12, right=True)
+            txt(screen, f"위력 {mv['power']}", F12, GRAY, x + 540, y + 46, right=True)
+        slot_rects.append(r)
+    skip_r = pygame.Rect(WIDTH // 2 - 100, 540, 200, 44)
+    btn(screen, skip_r, "포기", F14, hover=skip_r.collidepoint(mx, my))
+    return slot_rects, skip_r
+
+def draw_battle(mx, my):
+    screen.fill((120, 180, 100))
+    pygame.draw.rect(screen, (88, 140, 72), (0, 0, WIDTH, HEIGHT // 2))
+    pygame.draw.rect(screen, (200, 180, 120), (0, HEIGHT // 2, WIDTH, HEIGHT // 2))
+
+    pygame.draw.ellipse(screen, (80, 120, 60), (540, 210, 200, 40))
+
+    if g.battle_pid:
+        img = get_img(g.battle_pid)
+        if img:
+            big = pygame.transform.scale_by(img, 4)
+            screen.blit(big, (470, 0))
+
+    pygame.draw.rect(screen, WHITE, (30, 30, 280, 90), border_radius=8)
+    pygame.draw.rect(screen, BLACK, (30, 30, 280, 90), 2, border_radius=8)
+    txt(screen, g.battle_target, F18, BLACK, 50, 45)
+    txt(screen, f"Lv.{g.battle_level}", F14, GRAY, 260, 45, right=True)
+    ratio = g.battle_hp / g.battle_max_hp if g.battle_max_hp > 0 else 0
+    bar_w = int(200 * ratio)
+    bar_c = (80, 220, 80) if ratio > 0.5 else (220, 220, 80) if ratio > 0.25 else (220, 80, 80)
+    pygame.draw.rect(screen, (200, 200, 200), (50, 85, 200, 12), border_radius=6)
+    pygame.draw.rect(screen, bar_c, (50, 85, bar_w, 12), border_radius=6)
+    txt(screen, f"{g.battle_hp}/{g.battle_max_hp}", F12, BLACK, 260, 70, right=True)
+
+    pygame.draw.ellipse(screen, (160, 140, 90), (160, 330, 220, 50))
+
+    if g.my_pid:
+        back_img = load_back_img(g.my_pid)
+        if back_img:
+            screen.blit(back_img, (0, 150))
+
+    pygame.draw.rect(screen, WHITE, (580, 270, 280, 90), border_radius=8)
+    pygame.draw.rect(screen, BLACK, (580, 270, 280, 90), 2, border_radius=8)
+    if g.my_pid:
+        txt(screen, get_korean_name(g.my_pid), F18, BLACK, 600, 285)
+        txt(screen, f"Lv.{g.my_level}", F14, GRAY, 840, 285, right=True)
+    my_ratio = g.my_hp / g.my_max_hp if g.my_max_hp > 0 else 0
+    my_bar_w = int(200 * my_ratio)
+    my_bar_c = (80, 220, 80) if my_ratio > 0.5 else (220, 220, 80) if my_ratio > 0.25 else (220, 80, 80)
+    pygame.draw.rect(screen, (200, 200, 200), (600, 325, 200, 12), border_radius=6)
+    pygame.draw.rect(screen, my_bar_c, (600, 325, my_bar_w, 12), border_radius=6)
+    txt(screen, "HP", F12, BLACK, 600, 310)
+    txt(screen, f"{g.my_hp}/{g.my_max_hp}", F12, BLACK, 840, 310, right=True)
+
+    if g.battle_state == "command":
+        pygame.draw.rect(screen, WHITE, (0, HEIGHT - 160, WIDTH, 160))
+        pygame.draw.rect(screen, BLACK, (0, HEIGHT - 160, WIDTH, 160), 3)
+        pygame.draw.rect(screen, WHITE, (0, HEIGHT - 160, WIDTH // 2, 160))
+        pygame.draw.rect(screen, BLACK, (0, HEIGHT - 160, WIDTH // 2, 160), 2)
+        txt(screen, f"야생의 {g.battle_target}이 나타났다!", F14, BLACK, 20, HEIGHT - 130)
+        cmds = ["싸운다", "가방", "포켓몬", "도망간다"]
+        cmd_rects = []
+        for i, cmd in enumerate(cmds):
+            cx = WIDTH // 2 + (i % 2) * 240 + 20
+            cy = HEIGHT - 150 + (i // 2) * 60 + 10
+            r = pygame.Rect(cx, cy, 200, 48)
+            btn(screen, r, cmd, F18, hover=r.collidepoint(mx, my))
+            cmd_rects.append(r)
+        return cmd_rects, None, None
+    elif g.battle_state == "move":
+        move_rects, back_r = draw_battle_moves(mx, my)
+        return None, move_rects, back_r
+    elif g.battle_state == "bag":
+        item_rects, back_r = draw_battle_items(mx, my)
+        return None, item_rects, back_r
+    else:
+        pygame.draw.rect(screen, WHITE, (0, HEIGHT - 160, WIDTH, 160))
+        pygame.draw.rect(screen, BLACK, (0, HEIGHT - 160, WIDTH, 160), 3)
+        if g.battle_msgs:
+            txt(screen, g.battle_msgs[0], F18, BLACK, 20, HEIGHT - 120)
+        txt(screen, "▼", F12, GRAY, WIDTH - 20, HEIGHT - 20, right=True)
+        return None, None, None
+
+def draw_choice(cname, desc, types, cy, mx, my):
     screen.fill(BG)
     panel(screen, WIDTH // 2 - 300, HEIGHT // 2 - 180, 600, 360, PANEL2, alpha=235, radius=16, border=True)
     txt(screen, f"{cname}으로 선택하시겠습니까?", F18, BLACK, WIDTH // 2, HEIGHT // 2 - 148, center=True)
@@ -320,8 +1030,10 @@ def draw_choice(cname, desc, cy, mx, my):
     if desc:
         for i, line in enumerate(desc.split("\n")):
             txt(screen, line, F14, BLACK, WIDTH // 2, HEIGHT // 2 - 95 + i * 26, center=True)
+    if types:
+        for i, t in enumerate(types):
+            txt(screen, t, F14, TYPE_COLORS.get(t, GRAY), WIDTH // 2, HEIGHT // 2 + 60 + i * 26, center=True)
     mx, my = pygame.mouse.get_pos()
-
     ok_r = pygame.Rect(WIDTH // 2 - 160, HEIGHT // 2 + 120, 140, 40)
     no_r = pygame.Rect(WIDTH // 2 + 20, HEIGHT // 2 + 120, 140, 40)
     btn(screen, ok_r, "선택하기", F14, hover=ok_r.collidepoint(mx, my))
@@ -329,36 +1041,43 @@ def draw_choice(cname, desc, cy, mx, my):
     return ok_r, no_r
 
 
+
+
 def draw_book(cy):
     panel(screen, 10, cy, WIDTH - 20, HEIGHT - cy - 62, PANEL, alpha=180, radius=10, border=BORDER)
-    txt(screen, "도감", F18, ACCENT, WIDTH // 2, cy + 18, center=True)
-
+    txt(screen, f"관동 도감  {len(g.discovered)}/{TOTAL}", F18, ACCENT, WIDTH // 2, cy + 18, center=True)
     content_y = cy + 50
     panel_bottom = HEIGHT - 62
     screen.set_clip(pygame.Rect(10, content_y, WIDTH - 20, panel_bottom - content_y))
-
     for pid in range(1, TOTAL + 1):
         col = (pid - 1) % COL
         row = (pid - 1) // COL
         x = 20 + col * (CARD_W + 10)
         y = content_y + row * (CARD_H + 10) - book_scroll
-
         if y + CARD_H < content_y or y > panel_bottom:
             continue
-
-        panel(screen, x, y, CARD_W, CARD_H, (40, 60, 100), alpha=220, radius=10, border=BORDER)
-        txt(screen, f"#{pid}", F12, GRAY, x + 10, y + 8)
-
-        img = get_img_2x(pid)
-        if img:
-            screen.blit(img, (x + CARD_W // 2 - 48, y + 20))
-
-        name = get_korean_name(pid)
-        txt(screen, name, F12, WHITE, x + CARD_W // 2, y + CARD_H - 25, center=True)
-
+        found = pid in g.discovered
+        panel(screen, x, y, CARD_W, CARD_H, (40, 60, 100) if found else (28, 28, 36), alpha=220, radius=10, border=BORDER)
+        txt(screen, f"#{pid}", F12, GRAY if found else (50, 50, 60), x + 10, y + 8)
+        img_x = x + CARD_W // 2 - IMG_SIZE // 2
+        img_y = y + 30
+        if found:
+            preload(pid)
+            img = get_img(pid)
+            if img:
+                screen.blit(img, (img_x, img_y))
+            txt(screen, get_korean_name(pid), F12, WHITE, x + CARD_W // 2, y + CARD_H - 22, center=True)
+        else:
+            preload(pid)
+            sil = get_silhouette(pid)
+            if sil:
+                screen.blit(sil, (img_x, img_y))
+            else:
+                pygame.draw.rect(screen, (40, 40, 50), (img_x, img_y, IMG_SIZE, IMG_SIZE), border_radius=6)
+                txt(screen, "?", F24, DARK_GRAY, img_x + IMG_SIZE // 2, img_y + IMG_SIZE // 2, center=True)
+            txt(screen, "???", F12, DARK_GRAY, x + CARD_W // 2, y + CARD_H - 22, center=True)
     screen.set_clip(None)
 
-choice = None
 running = True
 while running:
     mx, my = pygame.mouse.get_pos()
@@ -366,7 +1085,7 @@ while running:
         if event.type == pygame.QUIT:
             running = False
         if event.type == pygame.MOUSEWHEEL:
-            if(g.scene == "book"):
+            if g.view == "book":
                 book_scroll = max(0, book_scroll - event.y * 30)
         if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
             if g.scene == "title":
@@ -379,25 +1098,185 @@ while running:
                     ball_rect = _pokeball.get_rect(center=(cx, HEIGHT // 2 + 20))
                     if ball_rect.collidepoint(mx, my):
                         g.poket = pid
-                        print(pid)
+                        _bg_load_sync(pid)
+                        choice_name = name_cache.get(pid, str(pid))
+                        choice_desc = get_desc(pid)
+                        choice_types = get_types_ko(pid)
                         g.scene = "choice"
             elif g.scene == "choice":
-                ok_r, no_r = draw_choice(get_korean_name(g.poket), get_desc(g.poket), 108, mx, my)
+                ok_r, no_r = draw_choice(choice_name, choice_desc, choice_types, 108, mx, my)
                 if ok_r.collidepoint(mx, my):
-                    g.scene = "main" 
+                    g.discovered.add(g.poket)
+                    stats = get_stats(g.poket)
+                    lv = 5
+                    moves = get_my_moves(g.poket, lv)
+                    g.poket_list[g.poket] = {
+                        "lv": lv,
+                        "stat": stats,
+                        "hp": calc_hp(stats["hp"], lv),
+                        "max_hp": calc_hp(stats["hp"], lv),
+                        "moves": moves,
+                    }
+                    g.scene = "main"
                 if no_r.collidepoint(mx, my):
                     g.scene = "first"
+            elif g.scene == "main":
+                for r, key in tab_rects:
+                    if r.collidepoint(mx, my):
+                        g.view = None if g.view == key else key
+                        map_selected = None
+                if g.view == "map":
+                    if map_ok_r and map_ok_r.collidepoint(mx, my):
+                        g.current_location = map_selected
+                        map_selected = None
+                    elif map_no_r and map_no_r.collidepoint(mx, my):
+                        map_selected = None
+                    else:
+                        reachable = set(MAP_NODES[g.current_location]["conn"])
+                        for name, r in map_node_rects.items():
+                            if r.collidepoint(mx, my) and name in reachable:
+                                map_selected = name
+                                break
+                if g.view == "shop":
+                    for r, cname in item_li:
+                        if r.collidepoint(mx, my):
+                            if ITEM_LIST[cname]["money"] <= g.money:
+                                g.buy_item(cname)
+                                g.money -= ITEM_LIST[cname]["money"]
+                                print("샀다!")
+                if g.view == "wild":
+                    b = draw_wild(108, mx, my)
+                    if b.collidepoint(mx, my):
+                        result = g.find_poket(g.current_location)
+                        if result:
+                            kind, value = result
+                            g.battle_type = kind
+                            if kind == "pokemon":
+                                _bg_load_sync(value)
+                                g.battle_pid = value
+                                g.battle_target = name_cache.get(value, str(value))
+                            else:
+                                g.battle_pid = None
+                                g.battle_target = value
+                            g.scene = "battle_choice"
+                if g.view == "team":
+                    have_pids, team_rects = draw_team(108, mx, my)
+                    for i, pid in enumerate(have_pids):
+                        col = i % 3
+                        row = i // 3
+                        r = pygame.Rect(30 + col * 150, 108 + 44 + row * 110, 120, 96)
+                        if r.collidepoint(mx, my):
+                            if pid in g.team:
+                                g.team.pop(pid)
+                            elif len(g.team) < 6:
+                                g.team[pid] = g.poket_list[pid]
+                    team_keys = list(g.team.keys())
+                    for i, r in enumerate(team_rects):
+                        if r.collidepoint(mx, my) and i < len(team_keys):
+                            g.team.pop(team_keys[i])
+            elif g.scene == "battle_choice":
+                ok_r, no_r = draw_battle_choice(108, mx, my)
+                if ok_r.collidepoint(mx, my):
+                    if len(g.team) > 0:
+                        lv = random.randint(2, 4)
+                        g.battle_level = lv
+                        stats = get_stats(g.battle_pid)
+                        g.battle_max_hp = calc_hp(stats["hp"], lv)
+                        g.battle_hp = g.battle_max_hp
+                        g.battle_attack = calc_stat(stats["attack"], lv)
+                        g.battle_defense = calc_stat(stats["defense"], lv)
+                        g.battle_sp_attack = calc_stat(stats["special-attack"], lv)
+                        g.battle_sp_defense = calc_stat(stats["special-defense"], lv)
+                        g.battle_speed = calc_stat(stats["speed"], lv)
+                        g.my_pid = list(g.team.keys())[0]
+                        my_lv = g.team[g.my_pid]["lv"]
+                        my_stats = g.team[g.my_pid]["stat"]
+                        g.my_level = my_lv
+                        g.my_max_hp = calc_hp(my_stats["hp"], my_lv)
+                        g.my_hp = g.team[g.my_pid]["hp"]
+                        g.my_attack = calc_stat(my_stats["attack"], my_lv)
+                        g.my_defense = calc_stat(my_stats["defense"], my_lv)
+                        g.my_sp_attack = calc_stat(my_stats["special-attack"], my_lv)
+                        g.my_sp_defense = calc_stat(my_stats["special-defense"], my_lv)
+                        g.my_speed = calc_stat(my_stats["speed"], my_lv)
+                        g.my_moves = g.poket_list[g.my_pid]["moves"]
+                        g.battle_state = "command"
+                        g.battle_msgs = []
+                        g.scene = "battle_poket"
+                if no_r and no_r.collidepoint(mx, my):
+                    g.scene = "main"
+            elif g.scene == "battle_poket":
+                cmd_rects, move_rects, back_r = draw_battle(mx, my)
+                if g.battle_state == "command" and cmd_rects:
+                    if cmd_rects[0].collidepoint(mx, my):
+                        g.battle_state = "move"
+                    if cmd_rects[1].collidepoint(mx,my):
+                        g.battle_state = "bag"
+                    if cmd_rects[3].collidepoint(mx, my):
+                        g.scene = "main"
+                elif g.battle_state == "move" and move_rects:
+                    if back_r and back_r.collidepoint(mx, my):
+                        g.battle_state = "command"
+                    for i, r in enumerate(move_rects):
+                        if r.collidepoint(mx, my) and i < len(g.my_moves):
+                            do_player_turn(i)
+                elif g.battle_state == "bag":
+                    item_rects, back_r = draw_battle_items(mx, my)
+                    if back_r and back_r.collidepoint(mx, my):
+                        g.battle_state = "command"
+                    for r, cname in item_rects:
+                        if r.collidepoint(mx,my):
+                            g.use_item(cname)
+                elif g.battle_state == "msg":
+                    if g.battle_msgs:
+                        g.battle_msgs.pop(0)
+                    if not g.battle_msgs:
+                        if g.battle_after == "win":
+                            g.level_up(g.my_pid)
+                            g.poket_list[g.my_pid]["hp"] = g.my_hp
+                            g.battle_state = "command"
+                            g.scene = "main"
+                        elif g.battle_after == "lose":
+                            g.poket_list[g.my_pid]["hp"] = 0
+                            g.battle_state = "command"
+                            g.scene = "main"
+                        else:
+                            g.battle_state = g.battle_after
+            elif g.scene == "move_learn":
+                slot_rects, skip_r = draw_move_learn(mx, my)
+                if skip_r.collidepoint(mx, my):
+                    g.pending_move = None
+                    g.scene = "battle_poket"
+                for i, r in enumerate(slot_rects):
+                    if r.collidepoint(mx, my) and i < len(g.my_moves):
+                        g.my_moves[i] = g.pending_move
+                        g.poket_list[g.my_pid]["moves"][i] = g.pending_move
+                        g.pending_move = None
+                        g.scene = "battle_poket"
         if event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE:
             if g.scene == "choice":
                 g.scene = "first"
+            elif g.scene == "main" and map_selected:
+                map_selected = None
+            elif g.scene == "battle_choice":
+                g.scene = "main"
+            elif g.scene == "battle_poket":
+                g.scene = "main"
+
     if g.scene == "title":
         draw_title()
     elif g.scene == "first":
         draw_fist(108, mx, my)
     elif g.scene == "choice":
-        draw_choice(get_korean_name(g.poket), get_desc(g.poket) , 108, mx, my)
+        draw_choice(choice_name, choice_desc, choice_types, 108, mx, my)
     elif g.scene == "main":
-        draw_main(108,mx,my)
+        tab_rects = draw_main(get_bg(g.current_location))
+    elif g.scene == "battle_choice":
+        draw_battle_choice(108, mx, my)
+    elif g.scene == "battle_poket":
+        draw_battle(mx, my)
+    elif g.scene == "move_learn":
+        draw_move_learn(mx, my)
 
     pygame.display.flip()
     clock.tick(60)
