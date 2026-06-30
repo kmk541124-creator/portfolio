@@ -1,0 +1,65 @@
+{
+  "poket": 7,
+  "poket_list": {
+    "9": {
+      "lv": 54,
+      "stat": {
+        "hp": 79,
+        "attack": 83,
+        "defense": 100,
+        "special-attack": 85,
+        "special-defense": 105,
+        "speed": 78
+      },
+      "hp": 15,
+      "max_hp": 157,
+      "moves": {
+        "0": {
+          "name": "로케트박치기",
+          "power": 130,
+          "pp": 2,
+          "max_pp": 10,
+          "type": "normal",
+          "damage_class": "physical"
+        },
+        "1": {
+          "name": "껍질에숨기",
+          "power": 0,
+          "pp": 38,
+          "max_pp": 40,
+          "type": "water",
+          "damage_class": "status"
+        },
+        "2": {
+          "name": "거품",
+          "power": 40,
+          "pp": 28,
+          "max_pp": 30,
+          "type": "water",
+          "damage_class": "special"
+        },
+        "3": {
+          "name": "하이드로펌프",
+          "power": 110,
+          "pp": 5,
+          "max_pp": 5,
+          "type": "water",
+          "damage_class": "special"
+        }
+      },
+      "exp": 219,
+      "growth_rate": "medium-slow"
+    }
+  },
+  "discovered": [
+    8,
+    9,
+    7
+  ],
+  "team": [
+    9
+  ],
+  "item": [],
+  "money": 0,
+  "current_location": "1번도로"
+}
