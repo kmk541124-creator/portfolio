@@ -6,6 +6,7 @@ import random
 import math
 import os
 import json
+import copy
 
 pygame.init()
 WIDTH, HEIGHT = 1000, 680
@@ -96,13 +97,21 @@ NODE_POS = {
     "21번도로": (152, 892),
 }
 
-GYM ={
-    "회색체육관" : {"location":"회색시티", "try":{"웅"}}
+GYM_INIT = {
+    "회색체육관": {"location": "회색시티", "leader": "웅", "cleared": False}
 }
 
-TRY = {
-    "웅":{"pid":{74:{"lv":12},95:{"lv":14}}}
+TRY_INIT = {
+    "웅": {
+        "pid": {
+            74: {"lv": 12, "moves": ["tackle", "defense-curl", "rock-throw"]},
+            95: {"lv": 14, "moves": ["tackle", "bind", "rock-throw", "screech"]},
+        }
+    }
 }
+
+GYM = copy.deepcopy(GYM_INIT)
+TRY = copy.deepcopy(TRY_INIT)
 
 ROUTE_POKEMON = {
     "1번도로": [16, 19],
@@ -125,6 +134,16 @@ back_img_cache = {}
 evolution_cache = {}
 growth_rate_cache = {}
 base_exp_cache = {}
+trainer_move_cache = {}
+stats_cache = {}
+
+MOVE_NAME_KO_TO_EN = {
+    "몸통박치기": "tackle",
+    "웅크리기": "defense-curl",
+    "바위떨구기": "rock-throw",
+    "조르기": "bind",
+    "울음소리": "screech",
+}
 _loading_set = set()
 _loading_lock = threading.Lock()
 
@@ -288,11 +307,14 @@ def get_desc(pid):
     return ""
 
 def get_stats(pid):
-    res = requests.get(f"{BASE}/pokemon/{pid}").json()
-    return {s["stat"]["name"]: s["base_stat"] for s in res["stats"]}
+    if pid in stats_cache:
+        return stats_cache[pid]
+    res = requests.get(f"{BASE}/pokemon/{pid}", timeout=5).json()
+    stats_cache[pid] = {s["stat"]["name"]: s["base_stat"] for s in res["stats"]}
+    return stats_cache[pid]
 
 def fetch_move(url):
-    mv = requests.get(url).json()
+    mv = requests.get(url, timeout=5).json()
     name_ko = next((n["name"] for n in mv["names"] if n["language"]["name"] == "ko"), mv["name"])
     return {
         "name": name_ko,
@@ -304,7 +326,7 @@ def fetch_move(url):
     }
 
 def get_my_moves(pid, level):
-    res = requests.get(f"{BASE}/pokemon/{pid}").json()
+    res = requests.get(f"{BASE}/pokemon/{pid}", timeout=5).json()
     moves = {}
     count = 0
     for m in res["moves"]:
@@ -320,7 +342,7 @@ def get_my_moves(pid, level):
     return moves
 
 def check_new_move(pid, old_level, new_level):
-    res = requests.get(f"{BASE}/pokemon/{pid}").json()
+    res = requests.get(f"{BASE}/pokemon/{pid}", timeout=5).json()
     new_moves = []
     for m in res["moves"]:
         for vgd in m["version_group_details"]:
@@ -329,6 +351,28 @@ def check_new_move(pid, old_level, new_level):
                 if old_level < lv <= new_level:
                     new_moves.append(fetch_move(m["move"]["url"]))
     return new_moves
+
+def get_trainer_moves(move_names):
+    moves = {}
+    for i, name in enumerate(move_names[:4]):
+        slug = MOVE_NAME_KO_TO_EN.get(name, name)
+        if slug not in trainer_move_cache:
+            trainer_move_cache[slug] = fetch_move(f"{BASE}/move/{slug}")
+        moves[i] = dict(trainer_move_cache[slug])
+    return moves
+
+def preload_trainer_data(trainer_name):
+    def _load():
+        pool = TRY.get(trainer_name, {}).get("pid", {})
+        for pid, info in pool.items():
+            try:
+                preload(pid)
+                get_stats(pid)
+                get_trainer_moves(info.get("moves", []))
+                get_base_experience(pid)
+            except Exception:
+                pass
+    threading.Thread(target=_load, daemon=True).start()
 
 def calc_hp(base_hp, level, iv=15, ev=0):
     return int((base_hp * 2 + iv + ev // 4) * level // 100) + level + 10
@@ -344,14 +388,14 @@ def calc_damage(level, attack, defense, power):
     return max(1, dmg)
 
 def catch(pid):
-    res = requests.get(f"https://pokeapi.co/api/v2/pokemon-species/{pid}").json()
+    res = requests.get(f"https://pokeapi.co/api/v2/pokemon-species/{pid}", timeout=5).json()
     capture_rate = res["capture_rate"] 
     return capture_rate
 
 def get_growth_rate(pid):
     if pid in growth_rate_cache:
         return growth_rate_cache[pid]
-    species = requests.get(f"https://pokeapi.co/api/v2/pokemon-species/{pid}").json()
+    species = requests.get(f"https://pokeapi.co/api/v2/pokemon-species/{pid}", timeout=5).json()
     rate = species["growth_rate"]["name"]
     growth_rate_cache[pid] = rate
     return rate
@@ -359,7 +403,7 @@ def get_growth_rate(pid):
 def get_base_experience(pid):
     if pid in base_exp_cache:
         return base_exp_cache[pid]
-    res = requests.get(f"{BASE}/pokemon/{pid}").json()
+    res = requests.get(f"{BASE}/pokemon/{pid}", timeout=5).json()
     base_exp_cache[pid] = res["base_experience"]
     return base_exp_cache[pid]
 
@@ -394,6 +438,31 @@ def calc_exp_gain(enemy_pid, enemy_level, is_trainer=False):
     base_exp = get_base_experience(enemy_pid)
     a = 1.5 if is_trainer else 1
     return int((base_exp * enemy_level * a) / 7)
+
+def mark_gym_cleared(leader_name):
+    for gym_name, info in GYM.items():
+        if info.get("leader") == leader_name:
+            info["cleared"] = True
+            break
+
+def trainer_move_attack(trainer_name):
+    available = [i for i, mv in g.battle_moves.items() if mv["pp"] > 0]
+    if not available:
+        for mv in g.battle_moves.values():
+            mv["pp"] = mv["max_pp"]
+        available = list(g.battle_moves.keys())
+    move_idx = random.choice(available)
+    mv = g.battle_moves[move_idx]
+    mv["pp"] -= 1
+    dc = mv["damage_class"]
+    atk = g.battle_sp_attack if dc == "special" else g.battle_attack
+    def_ = g.my_sp_defense if dc == "special" else g.my_defense
+    dmg = calc_damage(g.battle_level, atk, def_, mv["power"])
+    g.my_hp = max(0, g.my_hp - dmg)
+    lines = [f"{trainer_name}의 {get_korean_name(g.battle_pid)}이(가) {mv['name']}을(를) 사용했다!"]
+    if mv["power"] > 0:
+        lines.append(f"내 포켓몬에게 {dmg}의 데미지!")
+    return lines
 
 def do_player_turn(move_idx):
     mv = g.my_moves[move_idx]
@@ -470,6 +539,8 @@ def do_player_turn(move_idx):
     g.battle_state = "msg"
 
 def do_player_turn_try(move_idx):
+    trainer_name = g.battle_target
+
     mv = g.my_moves[move_idx]
     if mv["pp"] <= 0:
         g.battle_msgs = ["기술의 PP가 없습니다!"]
@@ -495,11 +566,8 @@ def do_player_turn_try(move_idx):
         return g.battle_hp <= 0
 
     def enemy_attack():
-        enemy_power = random.randint(35, 55)
-        dmg = calc_damage(g.battle_level, g.battle_attack, g.my_defense, enemy_power)
-        g.my_hp = max(0, g.my_hp - dmg)
-        msgs.append(f"{target}의 {g.battle_target}이(가) 공격했다!")
-        msgs.append(f"내 포켓몬에게 {dmg}의 데미지!")
+        lines = trainer_move_attack(trainer_name)
+        msgs.extend(lines)
         return g.my_hp <= 0
 
     def give_exp():
@@ -510,10 +578,37 @@ def do_player_turn_try(move_idx):
             for lv in leveled_up:
                 msgs.append(f"{get_korean_name(g.my_pid)}이(가) Lv.{lv}(으)로 올랐다!")
 
+    def handle_enemy_defeated():
+        msgs.append(f"{trainer_name}의 {get_korean_name(g.battle_pid)}이(가) 쓰러졌다!")
+        del TRY[trainer_name]["pid"][g.battle_pid]
+        give_exp()
+        remaining = TRY[trainer_name]["pid"]
+        if len(remaining) > 0:
+            pid, info = next(iter(remaining.items()))
+            lv = info["lv"]
+            g.battle_pid = pid
+            _bg_load_sync(pid)
+            g.battle_level = lv
+            stats = get_stats(g.battle_pid)
+            g.battle_max_hp = calc_hp(stats["hp"], lv)
+            g.battle_hp = g.battle_max_hp
+            g.battle_attack = calc_stat(stats["attack"], lv)
+            g.battle_defense = calc_stat(stats["defense"], lv)
+            g.battle_sp_attack = calc_stat(stats["special-attack"], lv)
+            g.battle_sp_defense = calc_stat(stats["special-defense"], lv)
+            g.battle_speed = calc_stat(stats["speed"], lv)
+            g.battle_moves = get_trainer_moves(info.get("moves", []))
+            msgs.append(f"{trainer_name}(이)가 다음 포켓몬을 보냈다!")
+            g.battle_after = "next_poket"
+        else:
+            msgs.append(f"{trainer_name}(을)를 이겼다!")
+            g.battle_after = "trainer_win"
+
     if player_first:
         if player_attack():
-            msgs.append(f"{target}의 {g.battle_target}이(가) 쓰러졌다!")
-            
+            handle_enemy_defeated()
+            g.battle_msgs = msgs
+            g.battle_state = "msg"
             return
         if enemy_attack():
             msgs.append(f"{get_korean_name(g.my_pid)}이(가) 쓰러졌다!")
@@ -529,10 +624,8 @@ def do_player_turn_try(move_idx):
             g.battle_state = "msg"
             return
         if player_attack():
-            msgs.append(f"야생의 {g.battle_target}이(가) 쓰러졌다!")
-            give_exp()
+            handle_enemy_defeated()
             g.battle_msgs = msgs
-            g.battle_after = "win"
             g.battle_state = "msg"
             return
 
@@ -548,6 +641,12 @@ class Game:
         self.notif_timer = 0
 
     def start(self):
+        global TRY, GYM
+        TRY = copy.deepcopy(TRY_INIT)
+        GYM = copy.deepcopy(GYM_INIT)
+        for trainer_name in TRY:
+            preload_trainer_data(trainer_name)
+
         self.poket = 0
         self.poket_list = {}
         self.discovered = set()
@@ -573,6 +672,7 @@ class Game:
         self.battle_sp_attack = 0
         self.battle_sp_defense = 0
         self.battle_speed = 0
+        self.battle_moves = {}
         self.my_pid = None
         self.my_level = 0
         self.my_hp = 0
@@ -658,6 +758,7 @@ class Game:
         self.battle_sp_attack = 0
         self.battle_sp_defense = 0
         self.battle_speed = 0
+        self.battle_moves = {}
         self.my_pid = None
         self.my_level = 0
         self.my_hp = 0
@@ -700,9 +801,9 @@ class Game:
     def get_evolution_by_pid(self, pid):
         if pid in evolution_cache:
             return evolution_cache[pid]
-        species = requests.get(f"https://pokeapi.co/api/v2/pokemon-species/{pid}").json()
+        species = requests.get(f"https://pokeapi.co/api/v2/pokemon-species/{pid}", timeout=5).json()
         chain_url = species["evolution_chain"]["url"]
-        chain = requests.get(chain_url).json()["chain"]
+        chain = requests.get(chain_url, timeout=5).json()["chain"]
         evolutions = []
         def parse(node):
             species_url = node["species"]["url"]
@@ -764,23 +865,20 @@ class Game:
         return exp_gain, leveled_up
 
     def use_monsterball(self, type):
-        success = False
         ball_bonus = 1
         if type == "super":
             ball_bonus = 1.5
         elif type == "hyper":
             ball_bonus = 2
         elif type == "master":
-            success = True
-        if not success:
-            a = (3 * g.battle_max_hp - 2 * g.battle_hp) * catch(g.battle_pid) * ball_bonus
-            a /= 3 * g.battle_max_hp
-            a = int(a)
-            if a >= 255:
-                success = True
-            else:
-                success = random.randint(0, 255) < a
-        return False
+            return True
+
+        a = (3 * g.battle_max_hp - 2 * g.battle_hp) * catch(g.battle_pid) * ball_bonus
+        a /= 3 * g.battle_max_hp
+        a = int(a)
+        if a >= 255:
+            return True
+        return random.randint(0, 255) < a
 
     def use_item(self, cname):
         if cname == "몬스터볼":
@@ -955,22 +1053,23 @@ def draw_gym(cy, mx, my):
     txt(screen, "체육관", F18, ACCENT, WIDTH // 2, cy + 18, center=True)
     txt(screen, "체육관의 관장들에게 도전해 뱃지 얻으세요", F12, GRAY, WIDTH // 2, cy + 42, center=True)
     gym_list = []
-    names = list(ITEM_LIST.keys())
+    names = list(GYM.keys())
     for i, cname in enumerate(names):
-        info = ITEM_LIST[cname]
-        cx2 = 30 + (i % 2) * 480
-        cy2 = cy + 70 + (i // 2) * 160
-        w, h = 450, 145
-        panel(screen, cx2, cy2, w, h, (40, 60, 100), alpha=220, radius=12, border=True)
-        txt(screen, cname, F18, BLACK, cx2 + 20, cy2 + 14)
-        txt(screen, info["desc"], F12, GRAY, cx2 + 20, cy2 + 46)
-        txt(screen, f"가격: {info['money']}", F14, GOLD, cx2 + 20, cy2 + 100)
-        count = g.item.count(cname)
-        if count > 0:
-            txt(screen, f"보유 x{count}", F12, GREEN, cx2 + w - 20, cy2 + 14, right=True)
-        r = pygame.Rect(cx2 + w - 110, cy2 + h - 42, 95, 30)
-        btn(screen, r, "구매하기", F12, hover=r.collidepoint(mx, my))
-        gym_list.append((r, cname))
+        info = GYM[cname]
+        if(info["location"] == g.current_location):
+            cx2 = 30 + (i % 2) * 480
+            cy2 = cy + 70 + (i // 2) * 160
+            w, h = 450, 145
+            panel(screen, cx2, cy2, w, h, (40, 60, 100), alpha=220, radius=12, border=True)
+            txt(screen, cname, F18, BLACK, cx2 + 20, cy2 + 14)
+            txt(screen, f"관장: {info['leader']}", F14, GOLD, cx2 + 20, cy2 + 100)
+            r = pygame.Rect(cx2 + w - 110, cy2 + h - 42, 95, 30)
+            if info.get("cleared"):
+                txt(screen, "클리어 완료!", F14, GREEN, cx2 + 20, cy2 + 122)
+                btn(screen, r, "클리어", F12, active=False)
+            else:
+                btn(screen, r, "도전하기", F12, hover=r.collidepoint(mx, my))
+                gym_list.append((r, cname))
     return gym_list
 
 def draw_center(cy, mx, my):
@@ -1282,7 +1381,7 @@ def draw_battle_choice(cy, mx, my):
     screen.fill(BG)
     panel(screen, WIDTH // 2 - 300, HEIGHT // 2 - 180, 600, 360, PANEL2, alpha=235, radius=16, border=True)
     if g.battle_type == "trainer":
-        txt(screen, f"{g.battle_target}가 도전장을 내민다!", F18, BLACK, WIDTH // 2, HEIGHT // 2 - 148, center=True)
+        txt(screen, f"{g.battle_target}(이)가 도전장을 내민다!", F18, BLACK, WIDTH // 2, HEIGHT // 2 - 148, center=True)
     else:
         txt(screen, f"야생의 {g.battle_target}이 나타났다!", F18, BLACK, WIDTH // 2, HEIGHT // 2 - 148, center=True)
     pygame.draw.line(screen, BORDER, (WIDTH // 2 - 270, HEIGHT // 2 - 122), (WIDTH // 2 + 270, HEIGHT // 2 - 122), 1)
@@ -1291,6 +1390,8 @@ def draw_battle_choice(cy, mx, my):
     btn(screen, ok_r, "싸운다", F14, hover=ok_r.collidepoint(mx, my))
     if g.battle_type == "pokemon":
         btn(screen, no_r, "도망간다", F14, hover=no_r.collidepoint(mx, my))
+    else:
+        btn(screen, no_r, "포기한다", F14, hover=no_r.collidepoint(mx,my))
     return ok_r, no_r
 
 def draw_battle_moves(mx, my):
@@ -1487,7 +1588,7 @@ def draw_battle_trianer(mx, my):
 
     pygame.draw.rect(screen, WHITE, (30, 30, 280, 90), border_radius=8)
     pygame.draw.rect(screen, BLACK, (30, 30, 280, 90), 2, border_radius=8)
-    txt(screen, g.battle_target, F18, BLACK, 50, 45)
+    txt(screen, get_korean_name(g.battle_pid), F18, BLACK, 50, 45)
     txt(screen, f"Lv.{g.battle_level}", F14, GRAY, 260, 45, right=True)
     ratio = g.battle_hp / g.battle_max_hp if g.battle_max_hp > 0 else 0
     bar_w = int(200 * ratio)
@@ -1521,7 +1622,7 @@ def draw_battle_trianer(mx, my):
         pygame.draw.rect(screen, BLACK, (0, HEIGHT - 160, WIDTH, 160), 3)
         pygame.draw.rect(screen, WHITE, (0, HEIGHT - 160, WIDTH // 2, 160))
         pygame.draw.rect(screen, BLACK, (0, HEIGHT - 160, WIDTH // 2, 160), 2)
-        txt(screen, f"{target}이 싸움을 걸어왔다(숙명적인 싸움 이곳에 발을 들인 어쩌구저쩌구 희망을 어쩌구 저쩌구)", F14, BLACK, 20, HEIGHT - 130)
+        txt(screen, f"{g.battle_target}이 싸움을 걸어왔다(숙명적인 싸움 이곳에 발을 들인 어쩌구저쩌구 희망을 어쩌구 저쩌구)", F14, BLACK, 20, HEIGHT - 130)
         cmds = ["싸운다", "가방", "포켓몬", "도망간다"]
         cmd_rects = []
         for i, cmd in enumerate(cmds):
@@ -1656,10 +1757,18 @@ while running:
                     if r.collidepoint(mx, my):
                         g.view = None if g.view == key else key
                         map_selected = None
+                        if g.view == "gym":
+                            for trainer_name in TRY:
+                                preload_trainer_data(trainer_name)
                 if g.view == "map":
                     if map_ok_r and map_ok_r.collidepoint(mx, my):
                         g.current_location = map_selected
                         map_selected = None
+                        if(g.current_location == "3번도로"):
+                            info = GYM["회색체육관"]
+                            if not info.get("cleared"):
+                                g.notify("웅이 먼저 이기고 오세요", BLACK)
+                                g.current_location = "황토마을"
                     elif map_no_r and map_no_r.collidepoint(mx, my):
                         map_selected = None
                     else:
@@ -1714,6 +1823,14 @@ while running:
                         if r.collidepoint(mx,my):
                             g.pending_item = cname
                             g.scene = "item_select"
+                if g.view == "gym":
+                    gym_rect = draw_gym(108,mx, my)
+                    for r,cname in gym_rect:
+                        if r.collidepoint(mx,my):
+                            info = GYM[cname]
+                            g.battle_type = "trainer"
+                            g.battle_target = info["leader"]
+                            g.scene = "battle_choice"
             elif g.scene == "item_select":
                 poket_rects, back_r = draw_item_poket_select(108, mx, my)
                 if back_r.collidepoint(mx, my):
@@ -1768,36 +1885,40 @@ while running:
                             g.scene = "battle_poket"
                     else:
                         if len(g.team) > 0:
-                            if(g.current_location == "회색시티"):
-                                target = "웅"
-                            target_poket = TRY[target]["pid"]
-                            target_poket = next(iter(target_poket))
-                            lv = target_poket["lv"]
-                            g.battle_pid = target_poket
-                            g.battle_level = lv
-                            stats = get_stats(g.battle_pid)
-                            g.battle_max_hp = calc_hp(stats["hp"], lv)
-                            g.battle_hp = g.battle_max_hp
-                            g.battle_attack = calc_stat(stats["attack"], lv)
-                            g.battle_defense = calc_stat(stats["defense"], lv)
-                            g.battle_sp_attack = calc_stat(stats["special-attack"], lv)
-                            g.battle_sp_defense = calc_stat(stats["special-defense"], lv)
-                            g.battle_speed = calc_stat(stats["speed"], lv)
-                            g.my_pid = list(g.team.keys())[0]
-                            my_lv = g.team[g.my_pid]["lv"]
-                            my_stats = g.team[g.my_pid]["stat"]
-                            g.my_level = my_lv
-                            g.my_max_hp = calc_hp(my_stats["hp"], my_lv)
-                            g.my_hp = g.team[g.my_pid]["hp"]
-                            g.my_attack = calc_stat(my_stats["attack"], my_lv)
-                            g.my_defense = calc_stat(my_stats["defense"], my_lv)
-                            g.my_sp_attack = calc_stat(my_stats["special-attack"], my_lv)
-                            g.my_sp_defense = calc_stat(my_stats["special-defense"], my_lv)
-                            g.my_speed = calc_stat(my_stats["speed"], my_lv)
-                            g.my_moves = g.poket_list[g.my_pid]["moves"]
-                            g.battle_state = "command"
-                            g.battle_msgs = []
-                            g.scene = "battle_try"
+                            trainer_pool = TRY.get(g.battle_target, {}).get("pid", {})
+                            if not trainer_pool:
+                                g.notify(f"{g.battle_target}은(는) 이미 쓰러뜨렸습니다.", GRAY)
+                                g.scene = "main"
+                            else:
+                                pid, info = next(iter(trainer_pool.items()))
+                                lv = info["lv"]
+                                g.battle_pid = pid
+                                _bg_load_sync(pid)
+                                g.battle_level = lv
+                                stats = get_stats(g.battle_pid)
+                                g.battle_max_hp = calc_hp(stats["hp"], lv)
+                                g.battle_hp = g.battle_max_hp
+                                g.battle_attack = calc_stat(stats["attack"], lv)
+                                g.battle_defense = calc_stat(stats["defense"], lv)
+                                g.battle_sp_attack = calc_stat(stats["special-attack"], lv)
+                                g.battle_sp_defense = calc_stat(stats["special-defense"], lv)
+                                g.battle_speed = calc_stat(stats["speed"], lv)
+                                g.battle_moves = get_trainer_moves(info.get("moves", []))
+                                g.my_pid = list(g.team.keys())[0]
+                                my_lv = g.team[g.my_pid]["lv"]
+                                my_stats = g.team[g.my_pid]["stat"]
+                                g.my_level = my_lv
+                                g.my_max_hp = calc_hp(my_stats["hp"], my_lv)
+                                g.my_hp = g.team[g.my_pid]["hp"]
+                                g.my_attack = calc_stat(my_stats["attack"], my_lv)
+                                g.my_defense = calc_stat(my_stats["defense"], my_lv)
+                                g.my_sp_attack = calc_stat(my_stats["special-attack"], my_lv)
+                                g.my_sp_defense = calc_stat(my_stats["special-defense"], my_lv)
+                                g.my_speed = calc_stat(my_stats["speed"], my_lv)
+                                g.my_moves = g.poket_list[g.my_pid]["moves"]
+                                g.battle_state = "command"
+                                g.battle_msgs = []
+                                g.scene = "battle_try"
                 if no_r and no_r.collidepoint(mx, my):
                     g.scene = "main"
             elif g.scene == "battle_poket":
@@ -1810,6 +1931,7 @@ while running:
                     if cmd_rects[2].collidepoint(mx, my):
                         g.battle_state = "change"
                     if cmd_rects[3].collidepoint(mx, my):
+                        g.poket_list[g.my_pid]["hp"] = g.my_hp
                         g.scene = "main"
                 elif g.battle_state == "move" and move_rects:
                     if back_r and back_r.collidepoint(mx, my):
@@ -1853,6 +1975,7 @@ while running:
                         g.battle_state = "command"
                     for r, cname in poket_rects:
                         if r.collidepoint(mx, my) and cname != g.my_pid:
+                            g.poket_list[g.my_pid]["hp"] = g.my_hp
                             g.my_pid = cname
                             my_lv = g.team[cname]["lv"]
                             my_stats = g.team[cname]["stat"]
@@ -1890,13 +2013,77 @@ while running:
                     if cmd_rects[2].collidepoint(mx, my):
                         g.battle_state = "change"
                     if cmd_rects[3].collidepoint(mx, my):
+                        g.poket_list[g.my_pid]["hp"] = g.my_hp
                         g.scene = "main"
                 elif g.battle_state == "move" and move_rects:
                     if back_r and back_r.collidepoint(mx,my):
                         g.battle_state = "command"
                     for i, r in enumerate(move_rects):
                         if r.collidepoint(mx, my) and i < len(g.my_moves):
-                            do_player_turn(i)
+                            do_player_turn_try(i)
+                elif g.battle_state == "bag":
+                    item_rects, back_r = draw_battle_items(mx, my)
+                    if back_r and back_r.collidepoint(mx, my):
+                        g.battle_state = "command"
+                    for r, cname in item_rects:
+                        if r.collidepoint(mx,my):
+                            g.use_item(cname)
+                elif g.battle_state == "msg":
+                    if g.battle_msgs:
+                        g.battle_msgs.pop(0)
+                    if not g.battle_msgs:
+                        if g.battle_after == "next_poket":
+                            g.battle_state = "command"
+                        elif g.battle_after == "trainer_win":
+                            g.poket_list[g.my_pid]["hp"] = g.my_hp
+                            mark_gym_cleared(g.battle_target)
+                            g.battle_state = "command"
+                            if g.pending_evolution:
+                                from_pid, to_pid = g.pending_evolution
+                                g.pending_evolution = None
+                                evo_from_pid = from_pid
+                                evo_to_pid = to_pid
+                                evo_start = pygame.time.get_ticks()
+                                _bg_load_sync(to_pid)
+                                g.scene = "evolution"
+                            else:
+                                g.scene = "main"
+                        elif g.battle_after == "lose":
+                            g.poket_list[g.my_pid]["hp"] = 0
+                            g.battle_state = "command"
+                            g.scene = "main"
+                        else:
+                            g.battle_state = g.battle_after
+                elif g.battle_state == "change":
+                    poket_rects, back_r = draw_battle_poket_change(mx, my)
+                    if back_r and back_r.collidepoint(mx,my):
+                        g.battle_state = "command"
+                    for r, cname in poket_rects:
+                        if r.collidepoint(mx, my) and cname != g.my_pid:
+                            g.poket_list[g.my_pid]["hp"] = g.my_hp
+                            g.my_pid = cname
+                            my_lv = g.team[cname]["lv"]
+                            my_stats = g.team[cname]["stat"]
+                            g.my_level = my_lv
+                            g.my_max_hp = calc_hp(my_stats["hp"], my_lv)
+                            g.my_hp = g.team[cname]["hp"]
+                            g.my_attack = calc_stat(my_stats["attack"], my_lv)
+                            g.my_defense = calc_stat(my_stats["defense"], my_lv)
+                            g.my_sp_attack = calc_stat(my_stats["special-attack"], my_lv)
+                            g.my_sp_defense = calc_stat(my_stats["special-defense"], my_lv)
+                            g.my_speed = calc_stat(my_stats["speed"], my_lv)
+                            g.my_moves = g.poket_list[cname]["moves"]
+
+                            msgs = []
+                            msgs.append(f"{get_korean_name(g.my_pid)}(으)로 교체했다!")
+                            msgs.extend(trainer_move_attack(g.battle_target))
+                            if g.my_hp <= 0:
+                                msgs.append(f"{get_korean_name(g.my_pid)}이(가) 쓰러졌다!")
+                                g.battle_after = "lose"
+                            else:
+                                g.battle_after = "command"
+                            g.battle_msgs = msgs
+                            g.battle_state = "msg"
             elif g.scene == "move_learn":
                 slot_rects, skip_r = draw_move_learn(mx, my)
                 if skip_r.collidepoint(mx, my):
